@@ -278,11 +278,29 @@ photonicsSim::photonicsAllocBuffer(uint32_t numElements, PhotonicsDataType dataT
 
 // @brief  Free a PHOTONICS object
 bool
-photonicsSim::photonicsFree(PhotonicsObjId obj)
+photonicsSim::photonicsFreeMat(PhotonicsObjId obj)
 {
   photonicsPerfMon perfMon("photonicsFree");
   if (!isValidDevice()) { return false; }
-  return m_device->photonicsFree(obj);
+  return m_device->photonicsFree(obj, m_device->getNumCores());
+}
+
+// @brief  Free a PHOTONICS object
+bool
+photonicsSim::photonicsFreeSrcVec(PhotonicsObjId obj)
+{
+  photonicsPerfMon perfMon("photonicsFree");
+  if (!isValidDevice()) { return false; }
+  return m_device->photonicsFree(obj, m_device->getNumBankPerRank());
+}
+
+// @brief  Free a PHOTONICS object
+bool
+photonicsSim::photonicsFreeDestVec(PhotonicsObjId obj)
+{
+  photonicsPerfMon perfMon("photonicsFree");
+  if (!isValidDevice()) { return false; }
+  return m_device->photonicsFree(obj, m_device->getNumCores());
 }
 
 //! @brief  Create an obj referencing to a range of an existing obj

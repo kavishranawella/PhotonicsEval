@@ -219,9 +219,9 @@ photonicsDevice::photonicsAllocAssociatedDestVec(PhotonicsObjId assocId, Photoni
 
 //! @brief  Free a PHOTONICS object
 bool
-photonicsDevice::photonicsFree(PhotonicsObjId obj)
+photonicsDevice::photonicsFree(PhotonicsObjId obj, unsigned numCores)
 {
-  return m_resMgr->photonicsFree(obj);
+  return m_resMgr->photonicsFree(obj, numCores);
 }
 
 //! @brief  Create an obj referencing to a range of an existing obj

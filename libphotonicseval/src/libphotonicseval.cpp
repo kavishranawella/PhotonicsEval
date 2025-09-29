@@ -126,9 +126,25 @@ photonicsAllocBuffer(uint32_t numElements, PhotonicsDataType dataType)
 
 //! @brief  Free a PHOTONICS resource
 PhotonicsStatus
-photonicsFree(PhotonicsObjId obj)
+photonicsFreeMat(PhotonicsObjId obj)
 {
-  bool ok = photonicsSim::get()->photonicsFree(obj);
+  bool ok = photonicsSim::get()->photonicsFreeMat(obj);
+  return ok ? PHOTONICS_OK : PHOTONICS_ERROR;
+}
+
+//! @brief  Free a PHOTONICS resource
+PhotonicsStatus
+photonicsFreeSrcVec(PhotonicsObjId obj)
+{
+  bool ok = photonicsSim::get()->photonicsFreeSrcVec(obj);
+  return ok ? PHOTONICS_OK : PHOTONICS_ERROR;
+}
+
+//! @brief  Free a PHOTONICS resource
+PhotonicsStatus
+photonicsFreeDestVec(PhotonicsObjId obj)
+{
+  bool ok = photonicsSim::get()->photonicsFreeDestVec(obj);
   return ok ? PHOTONICS_OK : PHOTONICS_ERROR;
 }
 

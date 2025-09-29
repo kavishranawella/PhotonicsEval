@@ -284,7 +284,7 @@ public:
   PhotonicsObjId photonicsAllocAssociatedSrcVec(PhotonicsObjId assocId, PhotonicsDataType dataType);
   PhotonicsObjId photonicsAllocAssociatedDestVec(PhotonicsObjId assocId, PhotonicsDataType dataType);
   PhotonicsObjId photonicsAllocBuffer(uint32_t numElements, PhotonicsDataType dataType);
-  bool photonicsFree(PhotonicsObjId objId);
+  bool photonicsFree(PhotonicsObjId objId, unsigned numCores);
   PhotonicsObjId photonicsCreateRangedRef(PhotonicsObjId refId, uint64_t idxBegin, uint64_t idxEnd);
   PhotonicsObjId photonicsCreateDualContactRef(PhotonicsObjId refId);
 

@@ -871,7 +871,7 @@ photonicsResMgr::photonicsAllocAssociatedSrcVec(PhotonicsObjId assocId, Photonic
   }
 
   bool success = true;
-  for (unsigned i = 0; i < numCores; ++i) {
+  for (unsigned i = 0; i < numHCores; ++i) {
     m_coreUsage.at(i)->newAllocStart();
   }
 
@@ -928,7 +928,7 @@ photonicsResMgr::photonicsAllocAssociatedSrcVec(PhotonicsObjId assocId, Photonic
     }
     regionIdx++;
   }
-  for (unsigned i = 0; i < numCores; ++i) {
+  for (unsigned i = 0; i < numHCores; ++i) {
     m_coreUsage.at(i)->newAllocEnd(success); // rollback if failed
   }
 
@@ -978,18 +978,20 @@ photonicsResMgr::photonicsAllocAssociatedDestVec(PhotonicsObjId assocId, Photoni
     return -1;
   }
 
+  // check if the request can be associated with ref
+  PhotonicsAllocEnum allocType = assocObj.getAllocType();
+  unsigned bitsPerElement = photonicsUtils::getNumBitsOfDataType(dataType, PhotonicsBitWidth::SIM);
+  unsigned bitsPerElementAssoc = assocObj.getBitsPerElement(PhotonicsBitWidth::PADDED);
+
   // get regions of the assoc obj
   unsigned numCores = m_device->getNumCores();
   unsigned numVCores = m_device->getNumRanks();
   unsigned numHCores = m_device->getNumBankPerRank();
   unsigned numVectorsPerCore = m_device->getNumSubarrayPerBank();
-  unsigned numElementsPerVector = m_device->getNumCols();
+  unsigned numElementsPerVector = m_device->getNumCols()/bitsPerElement;
 
-  // check if the request can be associated with ref
-  PhotonicsAllocEnum allocType = assocObj.getAllocType();
   uint64_t numElements = assocObj.getNumElements()/numElementsPerVector;
-  unsigned bitsPerElement = photonicsUtils::getNumBitsOfDataType(dataType, PhotonicsBitWidth::SIM);
-  unsigned bitsPerElementAssoc = assocObj.getBitsPerElement(PhotonicsBitWidth::PADDED);
+  
   if ((bitsPerElement > bitsPerElementAssoc) && (m_device->getSimTarget() != PHOTONICS_DEVICE_BANK_LEVEL && m_device->getSimTarget() != PHOTONICS_DEVICE_FULCRUM)) {
     printf("PHOTONICS-Error: photonicsAllocAssociatedDestVec: New object data type %s (%u bits) is wider than associated object (%u bits), which is not supported in H layout\n",
           photonicsUtils::photonicsDataTypeEnumToStr(dataType).c_str(), bitsPerElement, bitsPerElementAssoc);
@@ -1023,7 +1025,7 @@ photonicsResMgr::photonicsAllocAssociatedDestVec(PhotonicsObjId assocId, Photoni
   // The reason other horizontal bit-parallel (AiM, Aquabolt) PHOTONICS is not included in this condition is that
   // they support only 16-bit floats/ints.
   // If more bit-parallel PHOTONICSs are added, this condition should be extended.
-  if ((allocType == PHOTONICS_ALLOC_H || allocType == PHOTONICS_ALLOC_H1) && (bitsPerElement > bitsPerElementAssoc) && (m_device->getSimTarget() == PHOTONICS_DEVICE_BANK_LEVEL || m_device->getSimTarget() == PHOTONICS_DEVICE_FULCRUM)) {
+  if ((allocType == PHOTONICS_ALLOC_H || allocType == PHOTONICS_ALLOC_H1) && (bitsPerElement >= bitsPerElementAssoc) && (m_device->getSimTarget() == PHOTONICS_DEVICE_BANK_LEVEL || m_device->getSimTarget() == PHOTONICS_DEVICE_FULCRUM)) {
     // allocate one region per core, with horizontal layout
     numRegions = (numElements * bitsPerElement - 1) / numCols + 1;
 
@@ -1086,7 +1088,7 @@ photonicsResMgr::photonicsAllocAssociatedDestVec(PhotonicsObjId assocId, Photoni
     } else {
       PhotonicsCoreId coreId = region.getCoreId();
       unsigned numAllocRows = region.getNumAllocRows();
-      unsigned numAllocCols = region.getNumAllocCols();
+      unsigned numAllocCols = (regionIdx == numRegions - 1 ? numColsToAllocLast : numCols);
       if (allocType == PHOTONICS_ALLOC_V || allocType == PHOTONICS_ALLOC_V1) {
         numAllocRows = bitsPerElement;
       }
@@ -1096,8 +1098,9 @@ photonicsResMgr::photonicsAllocAssociatedDestVec(PhotonicsObjId assocId, Photoni
         success = false;
         break;
       }
-      newRegion.setElemIdxBegin(region.getElemIdxBegin());
-      newRegion.setElemIdxEnd(region.getElemIdxEnd()); // exclusive
+      newRegion.setElemIdxBegin(elemIdx);
+      elemIdx += (regionIdx == numRegions - 1 ? numElemPerRegionLast : numElemPerRegion);
+      newRegion.setElemIdxEnd(elemIdx); // exclusive
       newRegion.setNumColsPerElem(region.getNumColsPerElem());
       newObj.addRegion(newRegion);
 
@@ -1137,13 +1140,12 @@ photonicsResMgr::photonicsAllocAssociatedDestVec(PhotonicsObjId assocId, Photoni
 
 //! @brief  Free a PHOTONICS object
 bool
-photonicsResMgr::photonicsFree(PhotonicsObjId objId)
+photonicsResMgr::photonicsFree(PhotonicsObjId objId, unsigned numCores)
 {
   if (m_objMap.find(objId) == m_objMap.end()) {
     printf("PHOTONICS-Error: photonicsFree: Invalid PHOTONICS object ID %d\n", objId);
     return false;
   }
-  unsigned numCores = m_device->getNumCores();
   const photonicsObjInfo& obj = m_objMap.at(objId);
 
   if (!obj.isDualContactRef()) {

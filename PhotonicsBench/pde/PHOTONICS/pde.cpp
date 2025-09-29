@@ -125,6 +125,7 @@ public:
         hardware_actual_times.clear();
 
         u=start_u;
+        u_new = VectorXd(N);
 
         if(initializeHardware()!=PHOTONICS_OK) return;
 
@@ -166,9 +167,9 @@ public:
             auto end = std::chrono::high_resolution_clock::now();
             hostElapsedTime += (end - start);
         }
-        photonicsFree(vecUObject);
-        photonicsFree(outObject);
-        photonicsFree(matAObject);
+        photonicsFreeSrcVec(vecUObject);
+        photonicsFreeDestVec(outObject);
+        photonicsFreeMat(matAObject);
     }
 
     void solveSoftware(const vector<float>& target_times) {

@@ -177,7 +177,7 @@ protected:
     }
   private:
     photonicsCmd* m_cmd = nullptr;
-    unsigned m_regionIdx = 0;
+    const unsigned m_regionIdx = 0;
   };
 };
 

@@ -144,7 +144,9 @@ PhotonicsObjId photonicsAllocAssociatedDestVec(PhotonicsObjId assocId, Photonics
 // Please note that each chip/device will hold the same data in their respective buffers.
 // TODO: Support per-core buffers (like UPMEM)
 PhotonicsObjId photonicsAllocBuffer(uint32_t numElements, PhotonicsDataType dataType);
-PhotonicsStatus photonicsFree(PhotonicsObjId obj);
+PhotonicsStatus photonicsFreeMat(PhotonicsObjId obj);
+PhotonicsStatus photonicsFreeSrcVec(PhotonicsObjId obj);
+PhotonicsStatus photonicsFreeDestVec(PhotonicsObjId obj);
 
 // Data transfer
 // Note: idxBegin and idxEnd specify the range of indexes to be processed by the PHOTONICS.
