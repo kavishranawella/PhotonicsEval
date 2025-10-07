@@ -109,6 +109,8 @@ enum class PhotonicsCmdEnum {
   ROW_AAP,
   // PHOTONICS
   ITER,
+  MVM,
+  MMM,
 };
 
 
@@ -422,6 +424,29 @@ private:
   }
 };
 
+//! @class  photonicsCmdMvm
+//! @brief  Photonics CMD: Matrix-Vector Multiplication
+class photonicsCmdMvm : public photonicsCmd
+{
+public:
+  photonicsCmdMvm(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest)
+    : photonicsCmd((PhotonicsCmdEnum::MVM)), m_src1(src1), m_src2(src2), m_dest(dest){}
+  virtual ~photonicsCmdMvm() {}
+  virtual bool execute() override;
+  virtual bool sanityCheck() const override;
+  virtual bool computeRegion(unsigned index) override;
+  virtual bool updateStats() const override;
+protected:
+  PhotonicsObjId m_src1;
+  PhotonicsObjId m_src2;
+  PhotonicsObjId m_dest;
+  unsigned m_numVChips;
+  unsigned m_numHChips;
+  unsigned m_numVectorsPerCore;
+private:
+
+};
+
 //! @class  photonicsCmdIter
 //! @brief  Photonics CMD: Iterative loop
 class photonicsCmdIter : public photonicsCmd
@@ -439,6 +464,29 @@ protected:
   PhotonicsObjId m_src2;
   PhotonicsObjId m_dest;
   int8_t m_numLoops;
+  unsigned m_numVChips;
+  unsigned m_numHChips;
+  unsigned m_numVectorsPerCore;
+private:
+
+};
+
+//! @class  photonicsCmdMmm
+//! @brief  Photonics CMD: Matrix-Matrix Multiplication
+class photonicsCmdMmm : public photonicsCmd
+{
+public:
+  photonicsCmdMmm(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest)
+    : photonicsCmd((PhotonicsCmdEnum::MMM)), m_src1(src1), m_src2(src2), m_dest(dest) {}
+  virtual ~photonicsCmdMmm() {}
+  virtual bool execute() override;
+  virtual bool sanityCheck() const override;
+  virtual bool computeRegion(unsigned index) override;
+  virtual bool updateStats() const override;
+protected:
+  PhotonicsObjId m_src1;
+  PhotonicsObjId m_src2;
+  PhotonicsObjId m_dest;
   unsigned m_numVChips;
   unsigned m_numHChips;
   unsigned m_numVectorsPerCore;

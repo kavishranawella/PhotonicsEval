@@ -95,11 +95,11 @@ photonicsObjInfo::copyFromHost(void* src, uint64_t idxBegin, uint64_t idxEnd)
   if (m_refObjId != -1) {
     photonicsObjInfo& refObj = m_device->getResMgr()->getObjInfo(m_refObjId);
     if (isDualContactRef()) {
-      uint64_t numBytes = refObj.m_data.getNumBytes(idxBegin, idxEnd);
-      std::vector<float> buffer(numBytes);
+      uint64_t numElements = refObj.m_data.getNumElements(idxBegin, idxEnd);
+      std::vector<float> buffer(numElements);
       // Cast src to uint8_t* and convert in one pass
       const uint8_t* srcBytes = static_cast<const uint8_t*>(src);
-      for (size_t i = 0; i < numBytes; ++i) {
+      for (size_t i = 0; i < numElements; ++i) {
           buffer[i] = srcBytes[i] * 0.00390625f;  // normalize
       }
       refObj.m_data.copyFromHost(buffer.data(), idxBegin, idxEnd);
@@ -108,7 +108,15 @@ photonicsObjInfo::copyFromHost(void* src, uint64_t idxBegin, uint64_t idxEnd)
     }
     return;
   }
-  m_data.copyFromHost(src, idxBegin, idxEnd);
+  uint64_t numElements = m_data.getNumElements(idxBegin, idxEnd);
+  std::vector<float> buffer(numElements);
+  // Cast src to uint8_t* and convert in one pass
+  const uint8_t* srcBytes = static_cast<const uint8_t*>(src);
+  for (size_t i = 0; i < numElements; ++i) {
+      buffer[i] = srcBytes[i] * 0.00390625f;  // normalize
+  }
+  m_data.copyFromHost(buffer.data(), idxBegin, idxEnd);
+  return;
 }
 
 //! @brief  Copy data from PHOTONICS object data holder to host memory, with ref support
@@ -119,12 +127,12 @@ photonicsObjInfo::copyToHost(void* dest, uint64_t idxBegin, uint64_t idxEnd) con
   if (m_refObjId != -1) {
     photonicsObjInfo &refObj = m_device->getResMgr()->getObjInfo(m_refObjId);
     if (isDualContactRef()) {
-      uint64_t numBytes = refObj.m_data.getNumBytes(idxBegin, idxEnd);
-      std::vector<float> buffer(numBytes);
+      uint64_t numElements = refObj.m_data.getNumElements(idxBegin, idxEnd);
+      std::vector<float> buffer(numElements);
       refObj.m_data.copyToHost(buffer.data(), idxBegin, idxEnd);
       // Cast destination pointer
       uint8_t* destBytes = static_cast<uint8_t*>(dest);
-      for (size_t i = 0; i < numBytes; ++i) {
+      for (size_t i = 0; i < numElements; ++i) {
           destBytes[i] = static_cast<uint8_t>(buffer[i] * 256.0f);
       }
     } else {
@@ -132,7 +140,15 @@ photonicsObjInfo::copyToHost(void* dest, uint64_t idxBegin, uint64_t idxEnd) con
     }
     return;
   }
-  m_data.copyToHost(dest, idxBegin, idxEnd);
+  uint64_t numElements = m_data.getNumElements(idxBegin, idxEnd);
+  std::vector<float> buffer(numElements);
+  m_data.copyToHost(buffer.data(), idxBegin, idxEnd);
+  // Cast destination pointer
+  uint8_t* destBytes = static_cast<uint8_t*>(dest);
+  for (size_t i = 0; i < numElements; ++i) {
+      destBytes[i] = static_cast<uint8_t>(buffer[i] * 256.0f);
+  }
+  return;
 }
 
 //! @brief  Copy data from a PHOTONICS object data holder to another, with ref support
@@ -991,7 +1007,7 @@ photonicsResMgr::photonicsAllocAssociatedDestVec(PhotonicsObjId assocId, Photoni
   unsigned numElementsPerVector = m_device->getNumCols()/bitsPerElement;
 
   uint64_t numElements = assocObj.getNumElements()/numElementsPerVector;
-  
+
   if ((bitsPerElement > bitsPerElementAssoc) && (m_device->getSimTarget() != PHOTONICS_DEVICE_BANK_LEVEL && m_device->getSimTarget() != PHOTONICS_DEVICE_FULCRUM)) {
     printf("PHOTONICS-Error: photonicsAllocAssociatedDestVec: New object data type %s (%u bits) is wider than associated object (%u bits), which is not supported in H layout\n",
           photonicsUtils::photonicsDataTypeEnumToStr(dataType).c_str(), bitsPerElement, bitsPerElementAssoc);

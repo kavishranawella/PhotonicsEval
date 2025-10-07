@@ -165,7 +165,9 @@ PhotonicsStatus photonicsConvertType(PhotonicsObjId src, PhotonicsObjId dest);
 // Logic and Arithmetic Operation
 // Mixed data type extensions:
 // - photonicsAdd/photonicsSub: If src1 is an integer vector, src2 can be a Boolean vector for accumulation purposes.
+PhotonicsStatus photonicsMvm(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest);
 PhotonicsStatus photonicsIter(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest, int8_t numLoops = 1);
+PhotonicsStatus photonicsMmm(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest);
 PhotonicsStatus photonicsAdd(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest);
 PhotonicsStatus photonicsSub(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest);
 PhotonicsStatus photonicsMul(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest);

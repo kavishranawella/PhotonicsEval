@@ -404,6 +404,16 @@ photonicsSim::photonicsAdd(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsOb
   return m_device->executeCmd(std::move(cmd));
 }
 
+// @brief  PHOTONICS OP: Matrix-Vector Multiplication
+bool
+photonicsSim::photonicsMvm(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest)
+{
+  photonicsPerfMon perfMon("photonicsMvm");
+  if (!isValidDevice()) { return false; }
+  std::unique_ptr<photonicsCmd> cmd = std::make_unique<photonicsCmdMvm>(src1, src2, dest);
+  return m_device->executeCmd(std::move(cmd));
+}
+
 // @brief  PHOTONICS OP: iterative loop
 bool
 photonicsSim::photonicsIter(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest, int8_t numLoops)
@@ -411,6 +421,16 @@ photonicsSim::photonicsIter(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsO
   photonicsPerfMon perfMon("photonicsIter");
   if (!isValidDevice()) { return false; }
   std::unique_ptr<photonicsCmd> cmd = std::make_unique<photonicsCmdIter>(src1, src2, dest, numLoops);
+  return m_device->executeCmd(std::move(cmd));
+}
+
+// @brief  PHOTONICS OP: Matrix-Matrix Multiplication
+bool
+photonicsSim::photonicsMmm(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest)
+{
+  photonicsPerfMon perfMon("photonicsMmm");
+  if (!isValidDevice()) { return false; }
+  std::unique_ptr<photonicsCmd> cmd = std::make_unique<photonicsCmdMmm>(src1, src2, dest);
   return m_device->executeCmd(std::move(cmd));
 }
 

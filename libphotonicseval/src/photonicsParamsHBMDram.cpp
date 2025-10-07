@@ -4,7 +4,7 @@
 // This file is licensed under the MIT License.
 // See the LICENSE file in the root of this repository for more details.
 
-#include "pimParamsHBMDram.h"
+#include "photonicsParamsHBMDram.h"
 #include "photonicsUtils.h"
 #include <sstream>
 #include <string>

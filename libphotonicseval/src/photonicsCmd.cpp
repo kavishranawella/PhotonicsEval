@@ -101,6 +101,9 @@ photonicsCmd::getName(PhotonicsCmdEnum cmdType, const std::string& suffix)
     { PhotonicsCmdEnum::RREG_ROTATE_L, "rreg.rotate_l" },
     { PhotonicsCmdEnum::ROW_AP, "row_ap" },
     { PhotonicsCmdEnum::ROW_AAP, "row_aap" },
+    { PhotonicsCmdEnum::ITER, "iter_mvm" },
+    { PhotonicsCmdEnum::MVM, "mvm" },
+    { PhotonicsCmdEnum::MMM, "mmm" },
   };
   auto it = cmdNames.find(cmdType);
   return it != cmdNames.end() ? it->second + suffix : "unknown";
@@ -780,6 +783,108 @@ photonicsCmdFunc2::updateStats() const
 
 //! @brief  PHOTONICS CMD: Iterative loop
 bool
+photonicsCmdMvm::execute()
+{
+  if (m_debugCmds) {
+    std::printf("PHOTONICS-Cmd: %s (obj id %d * %d -> %d).\n", getName().c_str(), m_src1, m_src2, m_dest);
+  }
+
+  if (!sanityCheck()) {
+    return false;
+  }
+
+  m_numVChips = m_device->getNumRanks();
+  m_numHChips = m_device->getNumBankPerRank();
+  m_numVectorsPerCore = m_device->getNumSubarrayPerBank();
+  photonicsObjInfo &objSrc1 = m_device->getResMgr()->getObjInfo(m_src1);
+  photonicsObjInfo &objSrc2 = m_device->getResMgr()->getObjInfo(m_src2);
+  photonicsObjInfo &objDest = m_device->getResMgr()->getObjInfo(m_dest);
+
+  if (photonicsSim::get()->getDeviceType() != PHOTONICS_FUNCTIONAL) {
+    objSrc1.syncFromSimulatedMem();
+    objSrc2.syncFromSimulatedMem();
+  }
+
+  const std::vector<photonicsRegion>& src2Regions = objSrc2.getRegions();
+  const std::vector<photonicsRegion>& destRegions = objDest.getRegions();
+  unsigned numRegions = destRegions.size();
+
+  computeAllRegions(numRegions);
+
+  if (photonicsSim::get()->getDeviceType() != PHOTONICS_FUNCTIONAL) {
+    objDest.syncToSimulatedMem();
+  }
+
+  updateStats();
+  return true;
+}
+
+//! @brief  PHOTONICS CMD: Iterative loop - sanity check
+bool
+photonicsCmdMvm::sanityCheck() const
+{
+  photonicsResMgr* resMgr = m_device->getResMgr();
+  if (!isValidObjId(resMgr, m_src1) || !isValidObjId(resMgr, m_src2) || !isValidObjId(resMgr, m_dest)) {
+    return false;
+  }
+  const photonicsObjInfo& objSrc1 = resMgr->getObjInfo(m_src1);
+  const photonicsObjInfo& objSrc2 = resMgr->getObjInfo(m_src2);
+  const photonicsObjInfo& objDest = resMgr->getObjInfo(m_dest);
+  if (!isAssociated(objSrc1, objSrc2) || !isAssociated(objSrc1, objDest)) {
+    return false;
+  }
+
+  return true;
+}
+
+//! @brief  PHOTONICS CMD: Iterative loop - compute region
+bool
+photonicsCmdMvm::computeRegion(unsigned index)
+{
+  const photonicsObjInfo& objSrc1 = m_device->getResMgr()->getObjInfo(m_src1);
+  const photonicsObjInfo& objSrc2 = m_device->getResMgr()->getObjInfo(m_src2);
+  photonicsObjInfo& objDest = m_device->getResMgr()->getObjInfo(m_dest);
+
+  const photonicsRegion& src1Region = objSrc1.getRegions()[index];
+  const photonicsRegion& src2Region = objSrc2.getRegions()[index%m_numHChips];
+  const photonicsRegion& destRegion = objDest.getRegions()[index];
+
+  // perform the computation
+  uint64_t src1IdxBegin = src1Region.getElemIdxBegin();
+  uint64_t src2IdxBegin = src2Region.getElemIdxBegin();
+  uint64_t destIdxBegin = destRegion.getElemIdxBegin();
+  unsigned numElementsInRegion = src1Region.getNumElemInRegion();
+  float result = 0.0;
+  for (unsigned j = 0; j < numElementsInRegion; ++j) {
+    uint64_t src1ElemIdx = src1IdxBegin + j;
+    uint64_t src2ElemIdx = src2IdxBegin + j;
+    uint32_t operandBits1 = objSrc1.getElementBits(src1ElemIdx);
+    uint32_t operandBits2 = objSrc2.getElementBits(src2ElemIdx);
+    float floatOperand1 = photonicsUtils::castBitsToType<float>(operandBits1);
+    float floatOperand2 = photonicsUtils::castBitsToType<float>(operandBits2);
+    result = result + floatOperand1 * floatOperand2;
+  }
+  objDest.setElement(destIdxBegin, result);
+  return true;
+}
+
+//! @brief  PHOTONICS CMD: Iterative loop - update stats
+bool
+photonicsCmdMvm::updateStats() const
+{
+  const photonicsObjInfo& objSrc1 = m_device->getResMgr()->getObjInfo(m_src1);
+  const photonicsObjInfo& objSrc2 = m_device->getResMgr()->getObjInfo(m_src2);
+  const photonicsObjInfo& objDest = m_device->getResMgr()->getObjInfo(m_dest);
+  PhotonicsDataType dataType = objSrc1.getDataType();
+  bool isVLayout = objSrc1.isVLayout();
+
+  photonicseval::perfEnergy mPerfEnergy = photonicsSim::get()->getPerfEnergyModel()->getPerfEnergyForMvm(objSrc1, objSrc2, objDest);
+  photonicsSim::get()->getStatsMgr()->recordCmd(getName(dataType, isVLayout), mPerfEnergy);
+  return true;
+}
+
+//! @brief  PHOTONICS CMD: Iterative loop
+bool
 photonicsCmdIter::execute()
 {
   if (m_debugCmds) {
@@ -892,6 +997,108 @@ photonicsCmdIter::updateStats() const
   bool isVLayout = objSrc1.isVLayout();
 
   photonicseval::perfEnergy mPerfEnergy = photonicsSim::get()->getPerfEnergyModel()->getPerfEnergyForIter(objSrc1, objSrc2, objDest, m_numLoops);
+  photonicsSim::get()->getStatsMgr()->recordCmd(getName(dataType, isVLayout), mPerfEnergy);
+  return true;
+}
+
+//! @brief  PHOTONICS CMD: Iterative loop
+bool
+photonicsCmdMmm::execute()
+{
+  if (m_debugCmds) {
+    std::printf("PHOTONICS-Cmd: %s (obj id %d * %d -> %d).\n", getName().c_str(), m_src1, m_src2, m_dest);
+  }
+
+  if (!sanityCheck()) {
+    return false;
+  }
+
+  m_numVChips = m_device->getNumRanks();
+  m_numHChips = m_device->getNumBankPerRank();
+  m_numVectorsPerCore = m_device->getNumSubarrayPerBank();
+  photonicsObjInfo &objSrc1 = m_device->getResMgr()->getObjInfo(m_src1);
+  photonicsObjInfo &objSrc2 = m_device->getResMgr()->getObjInfo(m_src2);
+  photonicsObjInfo &objDest = m_device->getResMgr()->getObjInfo(m_dest);
+
+  if (photonicsSim::get()->getDeviceType() != PHOTONICS_FUNCTIONAL) {
+    objSrc1.syncFromSimulatedMem();
+    objSrc2.syncFromSimulatedMem();
+  }
+
+  const std::vector<photonicsRegion>& src2Regions = objSrc2.getRegions();
+  const std::vector<photonicsRegion>& destRegions = objDest.getRegions();
+  unsigned numRegions = destRegions.size();
+
+  computeAllRegions(numRegions);
+
+  if (photonicsSim::get()->getDeviceType() != PHOTONICS_FUNCTIONAL) {
+    objDest.syncToSimulatedMem();
+  }
+
+  updateStats();
+  return true;
+}
+
+//! @brief  PHOTONICS CMD: Iterative loop - sanity check
+bool
+photonicsCmdMmm::sanityCheck() const
+{
+  photonicsResMgr* resMgr = m_device->getResMgr();
+  if (!isValidObjId(resMgr, m_src1) || !isValidObjId(resMgr, m_src2) || !isValidObjId(resMgr, m_dest)) {
+    return false;
+  }
+  const photonicsObjInfo& objSrc1 = resMgr->getObjInfo(m_src1);
+  const photonicsObjInfo& objSrc2 = resMgr->getObjInfo(m_src2);
+  const photonicsObjInfo& objDest = resMgr->getObjInfo(m_dest);
+  if (!isAssociated(objSrc1, objSrc2) || !isAssociated(objSrc1, objDest)) {
+    return false;
+  }
+
+  return true;
+}
+
+//! @brief  PHOTONICS CMD: Iterative loop - compute region
+bool
+photonicsCmdMmm::computeRegion(unsigned index)
+{
+  const photonicsObjInfo& objSrc1 = m_device->getResMgr()->getObjInfo(m_src1);
+  const photonicsObjInfo& objSrc2 = m_device->getResMgr()->getObjInfo(m_src2);
+  photonicsObjInfo& objDest = m_device->getResMgr()->getObjInfo(m_dest);
+
+  const photonicsRegion& src1Region = objSrc1.getRegions()[index];
+  const photonicsRegion& src2Region = objSrc2.getRegions()[index%m_numHChips];
+  const photonicsRegion& destRegion = objDest.getRegions()[index];
+
+  // perform the computation
+  uint64_t src1IdxBegin = src1Region.getElemIdxBegin();
+  uint64_t src2IdxBegin = src2Region.getElemIdxBegin();
+  uint64_t destIdxBegin = destRegion.getElemIdxBegin();
+  unsigned numElementsInRegion = src1Region.getNumElemInRegion();
+  float result = 0.0;
+  for (unsigned j = 0; j < numElementsInRegion; ++j) {
+    uint64_t src1ElemIdx = src1IdxBegin + j;
+    uint64_t src2ElemIdx = src2IdxBegin + j;
+    uint32_t operandBits1 = objSrc1.getElementBits(src1ElemIdx);
+    uint32_t operandBits2 = objSrc2.getElementBits(src2ElemIdx);
+    float floatOperand1 = photonicsUtils::castBitsToType<float>(operandBits1);
+    float floatOperand2 = photonicsUtils::castBitsToType<float>(operandBits2);
+    result = result + floatOperand1 * floatOperand2;
+  }
+  objDest.setElement(destIdxBegin, result);
+  return true;
+}
+
+//! @brief  PHOTONICS CMD: Iterative loop - update stats
+bool
+photonicsCmdMmm::updateStats() const
+{
+  const photonicsObjInfo& objSrc1 = m_device->getResMgr()->getObjInfo(m_src1);
+  const photonicsObjInfo& objSrc2 = m_device->getResMgr()->getObjInfo(m_src2);
+  const photonicsObjInfo& objDest = m_device->getResMgr()->getObjInfo(m_dest);
+  PhotonicsDataType dataType = objSrc1.getDataType();
+  bool isVLayout = objSrc1.isVLayout();
+
+  photonicseval::perfEnergy mPerfEnergy = photonicsSim::get()->getPerfEnergyModel()->getPerfEnergyForMmm(objSrc1, objSrc2, objDest);
   photonicsSim::get()->getStatsMgr()->recordCmd(getName(dataType, isVLayout), mPerfEnergy);
   return true;
 }

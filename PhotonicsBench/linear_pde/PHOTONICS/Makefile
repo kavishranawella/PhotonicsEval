@@ -14,8 +14,8 @@ endif
 
 LDFLAGS += -pthread  # <-- ADD THIS LINE
 
-EXEC := pde.out
-SRC := pde.cpp
+EXEC := linear_pde.out
+SRC := linear_pde.cpp
 
 COMPILE_WITH_JPEG ?= 0
 ifeq ($(COMPILE_WITH_JPEG), 1)

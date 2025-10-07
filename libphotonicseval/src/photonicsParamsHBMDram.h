@@ -114,7 +114,7 @@ private:
   int m_outputLevel = 0;
 
   // Extended
-  double m_typicalRankBW = 285; // GB/s
+  double m_typicalRankBW = 2690; // GB/s
 };
 
 #endif

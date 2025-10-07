@@ -8,7 +8,7 @@
 #include "photonicsUtils.h"
 #include "pimParamsDDRDram.h"
 #include "pimParamsLPDDRDram.h"
-#include "pimParamsHBMDram.h"
+#include "photonicsParamsHBMDram.h"
 #include "pimParamsGDDRDram.h"
 #include <string>
 #include <algorithm>

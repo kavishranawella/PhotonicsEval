@@ -3,8 +3,8 @@
 #SBATCH -n 1
 #SBATCH -t 6:00:00
 #SBATCH -p cpu
-#SBATCH --job-name=pde
+#SBATCH --job-name=lud
 #SBATCH --mem=250000
-#SBATCH --output=output_pde.txt
+#SBATCH --output=output_lud.txt
 
-./PHOTONICS/pde.out
+./PHOTONICS/lud.out

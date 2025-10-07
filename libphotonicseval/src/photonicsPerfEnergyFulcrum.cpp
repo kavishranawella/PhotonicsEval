@@ -231,8 +231,23 @@ photonicsPerfEnergyFulcrum::getPerfEnergyForFunc2(PhotonicsCmdEnum cmdType, cons
 
 //! @brief  Perf energy model of Fulcrum for func2
 photonicseval::perfEnergy
-photonicsPerfEnergyFulcrum::getPerfEnergyForIter(const photonicsObjInfo& obj, const photonicsObjInfo& objSrc2, const photonicsObjInfo& objDest, int8_t numLoops) const
+photonicsPerfEnergyFulcrum::getPerfEnergyForMvm(const photonicsObjInfo& obj, const photonicsObjInfo& objSrc2, const photonicsObjInfo& objDest) const
 {
+  // Device parameters
+  const double f        = 20e9;
+  const double C        = 2.5e-13;
+  const double Vpp      = 0.9;
+  const double Iw       = 1e-10;
+  const double Vw       = 1.9;
+  const double fw       = 0.01e9;
+  const double FOMavg_adc = 0.67;
+  const double fc       = 5.6e8;
+  const double Pin_cap  = 40e-6;
+  const double J_per_bit= 0.06e-12;
+
+  // System parameters
+  const int base_ENOB   = 3;  // Fixed base ENOB
+
   double msRuntime = 0.0;
   double mjEnergy = 0.0;
   double msRead = 0.0;
@@ -246,13 +261,278 @@ photonicsPerfEnergyFulcrum::getPerfEnergyForIter(const photonicsObjInfo& obj, co
   unsigned minElementPerRegion = obj.isLoadBalanced() ? (std::ceil(obj.getNumElements() * 1.0 / obj.getNumCoreAvailable()) - (maxElementsPerRegion * (numPass - 1))) : maxElementsPerRegion;
   double numberOfALUOperationPerElement = ((double)bitsPerElement / m_fulcrumAluBitWidth);
 
+  // Parameters for ENOB 8, 2-way bit slicing
+  int vector_dim=128;
+  int m=128;
+  int slices = 1;
+  int ENOB = 8;
+  bool bitSlicing = false;
+
+  // Example scaling (replace with your Python-equivalent math)
+  double refPower = 0.1; // reference 100mW
+  double baseLaserPower;
+  if(bitSlicing){
+    double powerReduction = 1.0 / std::pow(100.0, slices - 1);
+    baseLaserPower = refPower * powerReduction;
+  } else{
+    baseLaserPower = refPower * std::pow(10, ((ENOB - 12)/3));
+  }
+
+  unsigned N_laser = bitSlicing ? m * (2 * slices - 1) : m;
+  double Plas = baseLaserPower * N_laser;
+
+  // Input Drivers
+  int N = (int)std::round(std::pow(2.0, bitSlicing ? base_ENOB : ENOB));
+  double V_avg = 0.0;
+  if (N < 10) {
+      double x = 0.0;
+      for (int j = 1; j < N; j++) {
+          x += (2.0 * N - 2.0 * j) * j / (N - 1);
+      }
+      V_avg = Vpp * (1.0 / (N * N)) * x;
+  } else {
+      V_avg = Vpp / 3.0;
+  }
+  double bits_per_sec = f * (bitSlicing ? base_ENOB : ENOB);
+  double Pin_dvr = J_per_bit * bits_per_sec;
+  double Pmod = Pin_cap + Pin_dvr;
+  int N_mod = bitSlicing ? vector_dim * slices : vector_dim;
+  double Pmod_tot = Pmod * N_mod;
+
+  // Weights
+  double Pwht_DC = Iw * Vw;
+  double Pwht_AC = C * Vw * Vw * fw;
+  int N_wht = bitSlicing ? vector_dim * m * slices : vector_dim * m;
+  double Pwht_tot = (Pwht_DC + Pwht_AC) * N_wht;
+
+  // TIA
+  double P_per_bit_rate = ((275.0 / 528.0) + (60.8 / 106.25) + (11.2 / 128.0)) / 3.0;
+  P_per_bit_rate *= 1e-3 / 1e9; // Convert to W per bit/s
+  double Pout_tia = P_per_bit_rate * bits_per_sec;
+  int N_tia = bitSlicing ? m * (2 * slices - 1) : m;
+  double Ptia_tot = Pout_tia * N_tia;
+
+  // ADC
+  double fs = 2 * f;
+  double envelope = FOMavg_adc * std::sqrt(1.0 + std::pow(fs / fc, 2.0));
+  double Padc = fs * envelope * 1e-15 * std::pow(2.0, bitSlicing ? base_ENOB : ENOB);
+  int N_adc = bitSlicing ? m * (2 * slices - 1) : m;
+  double Padc_tot = Padc * N_adc;
+
+  double powerPerCore = (Plas + Pmod_tot + Pwht_tot + Ptia_tot + Padc_tot) * 1000;
+
+  msRead = 0;
+  msWrite = 0;
+  msALU = 0.00005;
+  msRuntime = msRead + msWrite + msALU;
+  mjEnergy = numCoresUsed * powerPerCore * msRuntime / 1000;
+  // mjEnergy += numCoresUsed * ; // TODO: Use this to add energy due to multiple core interactions
+  totalOp = obj.getNumElements() * 2;
+
+  return photonicseval::perfEnergy(msRuntime, mjEnergy, msRead, msWrite, msALU, totalOp);
+}
+
+//! @brief  Perf energy model of Fulcrum for func2
+photonicseval::perfEnergy
+photonicsPerfEnergyFulcrum::getPerfEnergyForIter(const photonicsObjInfo& obj, const photonicsObjInfo& objSrc2, const photonicsObjInfo& objDest, int8_t numLoops) const
+{
+  // Device parameters
+  const double f        = 20e9;
+  const double C        = 2.5e-13;
+  const double Vpp      = 0.9;
+  const double Iw       = 1e-10;
+  const double Vw       = 1.9;
+  const double fw       = 0.01e9;
+  const double FOMavg_adc = 0.67;
+  const double fc       = 5.6e8;
+  const double Pin_cap  = 40e-6;
+  const double J_per_bit= 0.06e-12;
+
+  // System parameters
+  const int base_ENOB   = 3;  // Fixed base ENOB
+
+  double msRuntime = 0.0;
+  double mjEnergy = 0.0;
+  double msRead = 0.0;
+  double msWrite = 0.0;
+  double msALU = 0.0;
+  uint64_t totalOp = 0;
+  unsigned numPass = obj.getMaxNumRegionsPerCore();
+  unsigned bitsPerElement = obj.getBitsPerElement(PhotonicsBitWidth::ACTUAL);
+  unsigned numCoresUsed = obj.isLoadBalanced() ? obj.getNumCoreAvailable() : obj.getNumCoresUsed();
+  unsigned maxElementsPerRegion = obj.getMaxElementsPerRegion();
+  unsigned minElementPerRegion = obj.isLoadBalanced() ? (std::ceil(obj.getNumElements() * 1.0 / obj.getNumCoreAvailable()) - (maxElementsPerRegion * (numPass - 1))) : maxElementsPerRegion;
+  double numberOfALUOperationPerElement = ((double)bitsPerElement / m_fulcrumAluBitWidth);
+
+  // Parameters for ENOB 8, 2-way bit slicing
+  int vector_dim=128;
+  int m=128;
+  int slices = 1;
+  int ENOB = 8;
+  bool bitSlicing = false;
+
+  // Example scaling (replace with your Python-equivalent math)
+  double refPower = 0.1; // reference 100mW
+  double baseLaserPower;
+  if(bitSlicing){
+    double powerReduction = 1.0 / std::pow(100.0, slices - 1);
+    baseLaserPower = refPower * powerReduction;
+  } else{
+    baseLaserPower = refPower * std::pow(10, ((ENOB - 12)/3));
+  }
+
+  unsigned N_laser = bitSlicing ? m * (2 * slices - 1) : m;
+  double Plas = baseLaserPower * N_laser;
+
+  // Input Drivers
+  int N = (int)std::round(std::pow(2.0, bitSlicing ? base_ENOB : ENOB));
+  double V_avg = 0.0;
+  if (N < 10) {
+      double x = 0.0;
+      for (int j = 1; j < N; j++) {
+          x += (2.0 * N - 2.0 * j) * j / (N - 1);
+      }
+      V_avg = Vpp * (1.0 / (N * N)) * x;
+  } else {
+      V_avg = Vpp / 3.0;
+  }
+  double bits_per_sec = f * (bitSlicing ? base_ENOB : ENOB);
+  double Pin_dvr = J_per_bit * bits_per_sec;
+  double Pmod = Pin_cap + Pin_dvr;
+  int N_mod = bitSlicing ? vector_dim * slices : vector_dim;
+  double Pmod_tot = Pmod * N_mod;
+
+  // Weights
+  double Pwht_DC = Iw * Vw;
+  double Pwht_AC = C * Vw * Vw * fw;
+  int N_wht = bitSlicing ? vector_dim * m * slices : vector_dim * m;
+  double Pwht_tot = (Pwht_DC + Pwht_AC) * N_wht;
+
+  // TIA
+  double P_per_bit_rate = ((275.0 / 528.0) + (60.8 / 106.25) + (11.2 / 128.0)) / 3.0;
+  P_per_bit_rate *= 1e-3 / 1e9; // Convert to W per bit/s
+  double Pout_tia = P_per_bit_rate * bits_per_sec;
+  int N_tia = bitSlicing ? m * (2 * slices - 1) : m;
+  double Ptia_tot = Pout_tia * N_tia;
+
+  // ADC
+  double fs = 2 * f;
+  double envelope = FOMavg_adc * std::sqrt(1.0 + std::pow(fs / fc, 2.0));
+  double Padc = fs * envelope * 1e-15 * std::pow(2.0, bitSlicing ? base_ENOB : ENOB);
+  int N_adc = bitSlicing ? m * (2 * slices - 1) : m;
+  double Padc_tot = Padc * N_adc;
+
+  double powerPerCore = (Plas + Pmod_tot + Pwht_tot + Ptia_tot + Padc_tot) * 1000;
+
   msRead = 0;
   msWrite = 0;
   msALU = 0.00005 * numLoops;
   msRuntime = msRead + msWrite + msALU;
-  mjEnergy = numCoresUsed * (numPass - 1) * ((m_eAP * 2) + ((maxElementsPerRegion - 1) * 2 *  m_fulcrumShiftEnergy * 2) + (maxElementsPerRegion * (m_fulcrumAddEnergy + m_fulcrumMulEnergy) * numberOfALUOperationPerElement));
-  mjEnergy += numCoresUsed * ((m_eAP * 2) + ((minElementPerRegion - 1) * 2 *  m_fulcrumShiftEnergy * 2) + (minElementPerRegion * (m_fulcrumAddEnergy + m_fulcrumMulEnergy) * numberOfALUOperationPerElement));
-  mjEnergy += m_pBChip * m_numChipsPerRank * m_numRanks * msRuntime;
+  mjEnergy = numCoresUsed * powerPerCore * msRuntime / 1000;
+  // mjEnergy += numCoresUsed * ; // TODO: Use this to add energy due to multiple core interactions
+  totalOp = obj.getNumElements() * 2;
+
+  return photonicseval::perfEnergy(msRuntime, mjEnergy, msRead, msWrite, msALU, totalOp);
+}
+
+//! @brief  Perf energy model of Fulcrum for func2
+photonicseval::perfEnergy
+photonicsPerfEnergyFulcrum::getPerfEnergyForMmm(const photonicsObjInfo& obj, const photonicsObjInfo& objSrc2, const photonicsObjInfo& objDest) const
+{
+  // Device parameters
+  const double f        = 20e9;
+  const double C        = 2.5e-13;
+  const double Vpp      = 0.9;
+  const double Iw       = 1e-10;
+  const double Vw       = 1.9;
+  const double fw       = 0.01e9;
+  const double FOMavg_adc = 0.67;
+  const double fc       = 5.6e8;
+  const double Pin_cap  = 40e-6;
+  const double J_per_bit= 0.06e-12;
+
+  // System parameters
+  const int base_ENOB   = 3;  // Fixed base ENOB
+
+  double msRuntime = 0.0;
+  double mjEnergy = 0.0;
+  double msRead = 0.0;
+  double msWrite = 0.0;
+  double msALU = 0.0;
+  uint64_t totalOp = 0;
+  unsigned numPass = obj.getMaxNumRegionsPerCore();
+  unsigned bitsPerElement = obj.getBitsPerElement(PhotonicsBitWidth::ACTUAL);
+  unsigned numCoresUsed = obj.isLoadBalanced() ? obj.getNumCoreAvailable() : obj.getNumCoresUsed();
+  unsigned maxElementsPerRegion = obj.getMaxElementsPerRegion();
+  unsigned minElementPerRegion = obj.isLoadBalanced() ? (std::ceil(obj.getNumElements() * 1.0 / obj.getNumCoreAvailable()) - (maxElementsPerRegion * (numPass - 1))) : maxElementsPerRegion;
+  double numberOfALUOperationPerElement = ((double)bitsPerElement / m_fulcrumAluBitWidth);
+
+  // Parameters for ENOB 8, 2-way bit slicing
+  int vector_dim=128;
+  int m=128;
+  int slices = 1;
+  int ENOB = 8;
+  bool bitSlicing = false;
+
+  // Example scaling (replace with your Python-equivalent math)
+  double refPower = 0.1; // reference 100mW
+  double baseLaserPower;
+  if(bitSlicing){
+    double powerReduction = 1.0 / std::pow(100.0, slices - 1);
+    baseLaserPower = refPower * powerReduction;
+  } else{
+    baseLaserPower = refPower * std::pow(10, ((ENOB - 12)/3));
+  }
+
+  unsigned N_laser = bitSlicing ? m * (2 * slices - 1) : m;
+  double Plas = baseLaserPower * N_laser;
+
+  // Input Drivers
+  int N = (int)std::round(std::pow(2.0, bitSlicing ? base_ENOB : ENOB));
+  double V_avg = 0.0;
+  if (N < 10) {
+      double x = 0.0;
+      for (int j = 1; j < N; j++) {
+          x += (2.0 * N - 2.0 * j) * j / (N - 1);
+      }
+      V_avg = Vpp * (1.0 / (N * N)) * x;
+  } else {
+      V_avg = Vpp / 3.0;
+  }
+  double bits_per_sec = f * (bitSlicing ? base_ENOB : ENOB);
+  double Pin_dvr = J_per_bit * bits_per_sec;
+  double Pmod = Pin_cap + Pin_dvr;
+  int N_mod = bitSlicing ? vector_dim * slices : vector_dim;
+  double Pmod_tot = Pmod * N_mod;
+
+  // Weights
+  double Pwht_DC = Iw * Vw;
+  double Pwht_AC = C * Vw * Vw * fw;
+  int N_wht = bitSlicing ? vector_dim * m * slices : vector_dim * m;
+  double Pwht_tot = (Pwht_DC + Pwht_AC) * N_wht;
+
+  // TIA
+  double P_per_bit_rate = ((275.0 / 528.0) + (60.8 / 106.25) + (11.2 / 128.0)) / 3.0;
+  P_per_bit_rate *= 1e-3 / 1e9; // Convert to W per bit/s
+  double Pout_tia = P_per_bit_rate * bits_per_sec;
+  int N_tia = bitSlicing ? m * (2 * slices - 1) : m;
+  double Ptia_tot = Pout_tia * N_tia;
+
+  // ADC
+  double fs = 2 * f;
+  double envelope = FOMavg_adc * std::sqrt(1.0 + std::pow(fs / fc, 2.0));
+  double Padc = fs * envelope * 1e-15 * std::pow(2.0, bitSlicing ? base_ENOB : ENOB);
+  int N_adc = bitSlicing ? m * (2 * slices - 1) : m;
+  double Padc_tot = Padc * N_adc;
+
+  double powerPerCore = (Plas + Pmod_tot + Pwht_tot + Ptia_tot + Padc_tot) * 1000;
+
+  msRead = 0;
+  msWrite = 0;
+  msALU = 0.00005;
+  msRuntime = msRead + msWrite + msALU;
+  mjEnergy = numCoresUsed * powerPerCore * msRuntime / 1000;
+  // mjEnergy += numCoresUsed * ; // TODO: Use this to add energy due to multiple core interactions
   totalOp = obj.getNumElements() * 2;
 
   return photonicseval::perfEnergy(msRuntime, mjEnergy, msRead, msWrite, msALU, totalOp);

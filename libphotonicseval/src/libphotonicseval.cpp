@@ -271,11 +271,27 @@ photonicsAdd(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest)
   return ok ? PHOTONICS_OK : PHOTONICS_ERROR;
 }
 
+//! @brief  PHOTONICS Marix-Vector Multiplication
+PhotonicsStatus
+photonicsMvm(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest)
+{
+  bool ok = photonicsSim::get()->photonicsMvm(src1, src2, dest);
+  return ok ? PHOTONICS_OK : PHOTONICS_ERROR;
+}
+
 //! @brief  PHOTONICS iterative loop
 PhotonicsStatus
 photonicsIter(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest, int8_t numLoops)
 {
   bool ok = photonicsSim::get()->photonicsIter(src1, src2, dest, numLoops);
+  return ok ? PHOTONICS_OK : PHOTONICS_ERROR;
+}
+
+//! @brief  PHOTONICS Marix-Matrix Multiplication
+PhotonicsStatus
+photonicsMmm(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest)
+{
+  bool ok = photonicsSim::get()->photonicsMmm(src1, src2, dest);
   return ok ? PHOTONICS_OK : PHOTONICS_ERROR;
 }
 

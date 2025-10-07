@@ -120,6 +120,12 @@ bool initPhotonicsAccel(const char *configFile)
   return true;
 }
 
+bool getHardwareSpecs(PhotonicsDeviceProperties* deviceProperties)
+{
+  PhotonicsStatus status = photonicsGetDeviceProperties(deviceProperties);
+  return (status == PHOTONICS_OK) ? true : false;
+}
+
 // Function to print the dimensions of a 2D matrix
 inline void printMatrixDimensions (std::vector<std::vector<int>> &inputMatrix) {     
   std::cout << inputMatrix.size() << " x " 

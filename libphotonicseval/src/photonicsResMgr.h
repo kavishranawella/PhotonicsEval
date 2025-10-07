@@ -98,6 +98,12 @@ public:
     return numElements * m_bytesPerElement;
   }
 
+  // return the number of bytes within a given range
+  uint64_t getNumElements(uint64_t idxBegin, uint64_t idxEnd) const {
+    uint64_t numElements = (idxEnd == 0 ? m_numElements : idxEnd - idxBegin);
+    return numElements;
+  }
+
   // copy data of range [idxBegin, idxEnd) from host ptr into holder
   // use full range if idxEnd is default 0
   bool copyFromHost(void* src, uint64_t idxBegin = 0, uint64_t idxEnd = 0) {

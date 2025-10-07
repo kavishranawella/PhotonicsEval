@@ -82,7 +82,9 @@ public:
   bool photonicsConvertType(PhotonicsObjId src, PhotonicsObjId dest);
 
   // Computation
+  bool photonicsMvm(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest);
   bool photonicsIter(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest, int8_t numLoops = 1);
+  bool photonicsMmm(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest);
   bool photonicsAdd(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest);
   bool photonicsSub(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest);
   bool photonicsDiv(PhotonicsObjId src1, PhotonicsObjId src2, PhotonicsObjId dest);

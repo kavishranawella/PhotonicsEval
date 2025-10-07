@@ -87,24 +87,24 @@ photonicsPerfEnergyBase::getPerfEnergyForBytesTransfer(PhotonicsCmdEnum cmdType,
   double msWrite = 0.0;
   double msCompute = 0.0;
   uint64_t mTotalOP = 0;
-  double msRuntime = static_cast<double>(numBytes) / (m_typicalRankBW * m_numRanks * 1024 * 1024 * 1024 / 1000);
+  double msRuntime = static_cast<double>(numBytes) / (m_typicalRankBW * 1024 * 1024 * 1024 / 1000);
   switch (cmdType) {
     case PhotonicsCmdEnum::COPY_H2D:
     {
-      mjEnergy = m_eW * msRuntime * m_numChipsPerRank * m_numRanks;
-      mjEnergy += m_pBChip * m_numChipsPerRank * m_numRanks * msRuntime;
+      mjEnergy = m_eR * msRuntime;
+      //mjEnergy += m_pBChip * m_numChipsPerRank * m_numRanks * msRuntime; // TODO: This should modulator write
       break;
     }
     case PhotonicsCmdEnum::COPY_D2H:
     {
-      mjEnergy = m_eR * msRuntime * m_numChipsPerRank * m_numRanks;
-      mjEnergy += m_pBChip * m_numChipsPerRank * m_numRanks * msRuntime;
+      mjEnergy = m_eW * msRuntime;
+      //mjEnergy += m_pBChip * m_numChipsPerRank * m_numRanks * msRuntime;
       break;
     }
     case PhotonicsCmdEnum::COPY_D2D:
     {
       // One row read, one row write within a subarray
-      mjEnergy = m_eAP * 2 * msRuntime * m_numChipsPerRank * m_numRanks;
+      mjEnergy = m_eAP * 2 * msRuntime;
       mjEnergy += m_pBChip * m_numChipsPerRank * m_numRanks * msRuntime;
       break;
     }
@@ -143,12 +143,38 @@ photonicsPerfEnergyBase::getPerfEnergyForFunc2(PhotonicsCmdEnum cmdType, const p
   return photonicseval::perfEnergy(msRuntime, mjEnergy, msRead, msWrite, msCompute, mTotalOP);
 }
 
+//! @brief  Perf energy model of base class for mvm (placeholder)
+photonicseval::perfEnergy
+photonicsPerfEnergyBase::getPerfEnergyForMvm(const photonicsObjInfo& objSrc1, const photonicsObjInfo& objSrc2, const photonicsObjInfo& objDest) const
+{
+  double msRuntime = 1e10;
+  double mjEnergy = 999999999.9;
+  double msRead = 0.0;
+  double msWrite = 0.0;
+  double msCompute = 0.0;
+  uint64_t mTotalOP = 0;
+  return photonicseval::perfEnergy(msRuntime, mjEnergy, msRead, msWrite, msCompute, mTotalOP);
+}
+
 //! @brief  Perf energy model of base class for iter (placeholder)
 photonicseval::perfEnergy
 photonicsPerfEnergyBase::getPerfEnergyForIter(const photonicsObjInfo& objSrc1, const photonicsObjInfo& objSrc2, const photonicsObjInfo& objDest, int8_t numLoops) const
 {
   double msRuntime = 1e10 * numLoops;
   double mjEnergy = 999999999.9 * numLoops;
+  double msRead = 0.0;
+  double msWrite = 0.0;
+  double msCompute = 0.0;
+  uint64_t mTotalOP = 0;
+  return photonicseval::perfEnergy(msRuntime, mjEnergy, msRead, msWrite, msCompute, mTotalOP);
+}
+
+//! @brief  Perf energy model of base class for mmm (placeholder)
+photonicseval::perfEnergy
+photonicsPerfEnergyBase::getPerfEnergyForMmm(const photonicsObjInfo& objSrc1, const photonicsObjInfo& objSrc2, const photonicsObjInfo& objDest) const
+{
+  double msRuntime = 1e10;
+  double mjEnergy = 999999999.9;
   double msRead = 0.0;
   double msWrite = 0.0;
   double msCompute = 0.0;

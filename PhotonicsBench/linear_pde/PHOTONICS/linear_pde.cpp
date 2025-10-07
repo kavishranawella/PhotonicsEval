@@ -1,4 +1,4 @@
-// Test: C++ version of pde
+// Test: C++ version of linear_pde
 // Copyright (c) 2024 University of Virginia
 // This file is licensed under the MIT License.
 // See the LICENSE file in the root of this repository for more details.
@@ -35,7 +35,7 @@ typedef struct Params
 void usage()
 {
   fprintf(stderr,
-          "\nUsage:  ./pde.out [options]"
+          "\nUsage:  ./linear_pde.out [options]"
           "\n"
           "\n    -v    should verify result with CPU"
           "\n    -i    input image file (default=generates matrix with random numbers)"
@@ -81,10 +81,16 @@ struct Params getInputParams(int argc, char **argv)
 
 class HeatEquationPaperSolver {
 public:
-    HeatEquationPaperSolver(struct Params params, int n = 16, float dt = 0.01, float a = 1.0, float t_final = 4.0, int num_bits = 8)
-        : params(params), n(n), dt(dt), a(a), t_final(t_final), num_bits(num_bits)
-    {
-        N = n * n;
+    HeatEquationPaperSolver(struct Params params, float dt = 0.01, float a = 1.0, float t_final = 4.0, int num_bits = 8)
+        : params(params), dt(dt), a(a), t_final(t_final), num_bits(num_bits)
+    {   
+        if(initializeHardware()!=PHOTONICS_OK) {
+          std::cout << "Function: " << __func__ << "Abort: intializeHardware() failed" << std::endl;
+          return;
+        }
+
+        n = sqrt(N);
+        
         h = 6.0 / (n - 1);
         n_steps = static_cast<int>(round(t_final / dt));
 
@@ -114,8 +120,15 @@ public:
             }
         }
 
-        matR.resize(N, std::vector<int8_t>(N));
+        matR.resize(N * N);
+        out.resize(N * numHCores);
         vecU.resize(N);
+    }
+
+    ~HeatEquationPaperSolver(){
+        photonicsFreeSrcVec(vecUObject);
+        photonicsFreeDestVec(outObject);
+        photonicsFreeMat(matAObject);
     }
 
     void solveHardware(const vector<float>& target_times) {
@@ -126,8 +139,6 @@ public:
 
         u=start_u;
         u_new = VectorXd(N);
-
-        if(initializeHardware()!=PHOTONICS_OK) return;
 
         quantize_matrix(-1.0, 1.0);
         status = photonicsCopyHostToDevice((void *)matR.data(), matAObject);
@@ -167,9 +178,6 @@ public:
             auto end = std::chrono::high_resolution_clock::now();
             hostElapsedTime += (end - start);
         }
-        photonicsFreeSrcVec(vecUObject);
-        photonicsFreeDestVec(outObject);
-        photonicsFreeMat(matAObject);
     }
 
     void solveSoftware(const vector<float>& target_times) {
@@ -269,6 +277,7 @@ public:
     }
 
 private:
+    struct Params params;
     int n;          // grid size in one dimension
     int N;          // total number of grid points
     float dt;      // time step
@@ -279,6 +288,7 @@ private:
     int d = -4;     // diagonal value
     int num_bits = 8;
     int q_levels = (1 << num_bits) - 1;
+    int numVCores, numHCores, numVectorsPerCore, numElementsPerVector;
 
     vector<float> x, y;
     MatrixXd A, R;
@@ -290,11 +300,12 @@ private:
     PhotonicsObjId matAObject;
     PhotonicsObjId outObject;
     PhotonicsObjId vecUObject;
-    struct Params params;
+    PhotonicsDeviceProperties deviceParams;
 
     PhotonicsStatus status = PHOTONICS_OK;
-    std::vector<int8_t> vecU;
-    std::vector<std::vector<int8_t>> matR;
+    std::vector<uint8_t> vecU;
+    std::vector<uint8_t> out;
+    std::vector<uint8_t> matR;
 
     void buildLaplacian() {
         A = MatrixXd::Zero(N, N);
@@ -319,21 +330,32 @@ private:
       if (!initPhotonicsAccel(params.dramConfigFile))
         return PHOTONICS_ERROR;
 
-      matAObject = photonicsAllocMat(N*N, PHOTONICS_INT32);
+      if (!getHardwareSpecs(&deviceParams)){
+        return PHOTONICS_ERROR;
+      }
+
+      numVCores = deviceParams.numRanks;
+      numHCores = deviceParams.numBankPerRank;
+      numVectorsPerCore = deviceParams.numSubarrayPerBank;
+      numElementsPerVector = deviceParams.numColPerSubarray / 32;
+
+      N = numHCores * numElementsPerVector;
+
+      matAObject = photonicsAllocMat(N*N, PHOTONICS_FP32);
       if (matAObject == -1)
       {
         std::cout << "Function: " << __func__ << "Abort: photonicsAlloc failed for matrix A" << std::endl;
         return PHOTONICS_ERROR;
       }
       
-      outObject = photonicsAllocAssociatedDestVec(matAObject, PHOTONICS_INT32);
+      outObject = photonicsAllocAssociatedDestVec(matAObject, PHOTONICS_FP32);
       if (outObject == -1)
       {
         std::cout << "Function: " << __func__ << "Abort: photonicsAllocAssociated failed for vector U = " << outObject << std::endl;
         return PHOTONICS_ERROR;
       }
       
-      vecUObject = photonicsAllocAssociatedSrcVec(matAObject, PHOTONICS_INT32);
+      vecUObject = photonicsAllocAssociatedSrcVec(matAObject, PHOTONICS_FP32);
       if (vecUObject == -1)
       {
         std::cout << "Function: " << __func__ << "Abort: photonicsAllocAssociated failed for vector U = " << vecUObject << std::endl;
@@ -350,21 +372,21 @@ private:
       status = photonicsCopyHostToDevice((void *)vecU.data(), vecUObject);
       if (status != PHOTONICS_OK)
       {
-        std::cout << "Function: " << __func__ << "Abort: photonicsCopyHostToDevice failed between vecUObject and vecU" << std::endl;
+        std::cout << "Function: " << __func__ << "Abort: photonicsCopyHostToDevice failed between vecUObject and vecU at i=" << i << std::endl;
         return;
       }
 
-      status = photonicsIter(matAObject, vecUObject, outObject, 1);
+      status = photonicsMvm(matAObject, vecUObject, outObject);
       if (status != PHOTONICS_OK)
       {
-        std::cout << "Function: " << __func__ << "Abort: photonicsIter Failed at i=" << i << std::endl;
+        std::cout << "Function: " << __func__ << "Abort: photonicsMvm Failed at i=" << i << std::endl;
         return;
       }
 
-      status = photonicsCopyDeviceToHost(vecUObject, vecU.data());
+      status = photonicsCopyDeviceToHost(outObject, out.data());
       if (status != PHOTONICS_OK)
       {
-        std::cout << "Function: " << __func__ << "Abort: photonicsCopyDeviceToHost failed between vecUObject and vecU at i=" << i << std::endl;
+        std::cout << "Function: " << __func__ << "Abort: photonicsCopyDeviceToHost failed between outObject and out at i=" << i << std::endl;
         return;
       }
       dequantize_vector(-1.0, 1.0);
@@ -378,7 +400,7 @@ private:
           for (int j = 0; j < N; j++) {
             int q = std::round((R(i,j) - min_val) / scale);
             q = std::max(0, std::min(q, q_levels));
-            matR[i][j] = static_cast<int8_t>(q);
+            matR[i * N + j] = static_cast<uint8_t>(q);
           }
         }
     }
@@ -388,14 +410,18 @@ private:
         for (int i = 0; i < N; i++) {
             int q = std::round((u(i) - min_val) / scale);
             q = std::max(0, std::min(q, q_levels));
-            vecU[i] = static_cast<int8_t>(q);
+            vecU[i] = static_cast<uint8_t>(q);
         }
     }
 
     void dequantize_vector(float min_val, float max_val) {
         float scale = (max_val - min_val) / q_levels;
         for (int i = 0; i < N; i++) {
-            u_new(i) = vecU[i] * scale + min_val;
+            uint8_t acc = 0;
+            for (int j = 0; j < numHCores; j++){
+              acc = acc + out[i * numHCores + j];
+            }
+            u_new(i) = acc * scale + min_val;
         }
     }
 };
@@ -404,17 +430,17 @@ int main(int argc, char *argv[])
 {
   struct Params params = getInputParams(argc, argv);
 
-  int vecSize = 256;
+  params.dramConfigFile = (char *) "./configs/photonics/linear_pde.cfg";
 
-  HeatEquationPaperSolver solver(params, 16, 0.01, 1.0, 4.0, 8);
+  HeatEquationPaperSolver solver(params, 0.01, 1.0, 4.0, 8);
 
   vector<float> target_times = {0.25, 1.25, 3.75};
 
   solver.solveHardware(target_times);
-  solver.printHardwareSolutions();
+  //solver.printHardwareSolutions();
 
   solver.solveSoftware(target_times);
-  solver.printSoftwareSolutions();
+  //solver.printSoftwareSolutions();
 
   solver.compareSolutions();
 
