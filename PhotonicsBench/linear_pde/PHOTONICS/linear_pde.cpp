@@ -98,6 +98,10 @@ public:
         h = 6.0 / (n - 1);
         n_steps = static_cast<int>(round(t_final / dt));
 
+
+        alpha = (dt * a / (h * h));
+        beta  = ((dt * a / (h * h)) * d + 1.0);
+
         // Grid points
         x.resize(n);
         y.resize(n);
@@ -111,11 +115,11 @@ public:
 
         // Build R
         int d = -4;
-        R = A - d * MatrixXd::Identity(N, N);
+        R = A - d * MatrixXf::Identity(N, N);
         R = R / fabs(d);
 
         // Initial condition (Gaussian)
-        start_u = VectorXd(N);
+        start_u = VectorXf(N);
         for (int i = 0; i < n; i++) {
             for (int j = 0; j < n; j++) {
                 float X = x[j];
@@ -142,7 +146,7 @@ public:
         hardware_actual_times.clear();
 
         u=start_u;
-        u_new = VectorXd(N);
+        u_new = VectorXf(N);
 
         quantize_matrix(-1.0, 1.0);
         status = photonicsCopyHostToDevice((void *)matR.data(), matAObject);
@@ -162,14 +166,12 @@ public:
             float t = k * dt;
 
             // Update equation
-            u = (dt * a / (h * h)) * u_new
-                           + ((dt * a / (h * h)) * d + 1.0) * u
-                           + qFunc(t) * dt;
+            u = alpha * u_new + beta * u + qFunc(t) * dt;
 
             // Save solutions at requested times
             for (size_t i = 0; i < target_times.size(); i++) {
                 if ((fabs(t - target_times[i]) < (dt / 2.0)) && (hardware_solutions.size() < i + 1)) {
-                    MatrixXd sol(n, n);
+                    MatrixXf sol(n, n);
                     for (int row = 0; row < n; row++)
                         for (int col = 0; col < n; col++)
                             sol(row, col) = u(row * n + col);
@@ -195,24 +197,18 @@ public:
         // ------------------------------
         // GPU (cuBLAS) implementation
         // ------------------------------
-        int Nf = static_cast<int>(N);
         size_t bytes_R = N * N * sizeof(float);
         size_t bytes_u = N * sizeof(float);
 
-        // Convert Eigen matrix/vector to float arrays
-        MatrixXf Rf = R.cast<float>();
-        VectorXf uf = u.cast<float>();
-        VectorXf u_newf(N);
-
         // Allocate GPU memory
-        float *d_R, *d_u, *d_u_new;
+        float *d_R, *d_u, *d_qf;
         cudaMalloc(&d_R, bytes_R);
         cudaMalloc(&d_u, bytes_u);
-        cudaMalloc(&d_u_new, bytes_u);
+        cudaMalloc(&d_qf, bytes_u);
 
         // Copy initial data
-        cudaMemcpy(d_R, Rf.data(), bytes_R, cudaMemcpyHostToDevice);
-        cudaMemcpy(d_u, uf.data(), bytes_u, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_R, R.data(), bytes_R, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_u, u.data(), bytes_u, cudaMemcpyHostToDevice);
 
         // cuBLAS setup
         cublasHandle_t handle;
@@ -221,39 +217,32 @@ public:
         auto start = std::chrono::high_resolution_clock::now();
         for (int k = 1; k <= n_steps; k++) {
             float t = k * dt;
-            const float alpha = (dt * a / (h * h));
-            const float beta  = ((dt * a / (h * h)) * d + 1.0);
 
             // Compute: u_new = alpha * R * u + beta * u
             // (R is N×N, u is N×1)
             cublasSgemv(handle, CUBLAS_OP_N,
-                        Nf, Nf,
+                        N, N,
                         &alpha,
-                        d_R, Nf,
+                        d_R, N,
                         d_u, 1,
                         &beta,
                         d_u, 1);
 
             // Add source term qFunc(t) * dt
-            VectorXf qf = qFunc(t).cast<float>() * dt;
-            cudaMemcpy(d_u_new, qf.data(), bytes_u, cudaMemcpyHostToDevice);
+            VectorXf qf = qFunc(t) * dt;
+            cudaMemcpy(d_qf, qf.data(), bytes_u, cudaMemcpyHostToDevice);
 
-            // Combine: u = u_new + q
-            // Use Thrust or a custom CUDA kernel for elementwise addition (simplest below)
-            // For now just copy d_u (cuBLAS output) back to host and add qf on CPU
-            cudaMemcpy(u_newf.data(), d_u, bytes_u, cudaMemcpyDeviceToHost);
-            u_newf += qf;
-
-            // Copy new u to device for next iteration
-            cudaMemcpy(d_u, u_newf.data(), bytes_u, cudaMemcpyHostToDevice);
+            // d_u_new = d_u_new + 1.0f * d_qf
+            cublasSaxpy(handle, N, &one, d_qf, 1, d_u, 1);
 
             // Save solutions at requested times
             for (size_t i = 0; i < target_times.size(); i++) {
                 if ((fabs(t - target_times[i]) < (dt / 2.0)) && (software_solutions.size() < i + 1)) {
-                    MatrixXd sol(n, n);
+                    MatrixXf sol(n, n);
+                    cudaMemcpy(u.data(), d_u, bytes_u, cudaMemcpyDeviceToHost);
                     for (int row = 0; row < n; row++)
                         for (int col = 0; col < n; col++)
-                            sol(row, col) = static_cast<double>(u_newf(row * n + col));
+                            sol(row, col) = u(row * n + col);
                     software_solutions.push_back(sol);
                     software_actual_times.push_back(t);
                     cout << "Saved solution at t = " << t << endl;
@@ -265,9 +254,7 @@ public:
         cublasDestroy(handle);
         cudaFree(d_R);
         cudaFree(d_u);
-        cudaFree(d_u_new);
-
-        u = u_newf.cast<double>();
+        cudaFree(d_qf);
 
     #else
         // ------------------------------
@@ -278,19 +265,16 @@ public:
             float t = k * dt;
 
             // Update equation
-            VectorXd u_new = (dt * a / (h * h)) * R * u
-                           + ((dt * a / (h * h)) * d + 1.0) * u
-                           + qFunc(t) * dt;
+            VectorXf u_new = alpha * R * u + beta * u + qFunc(t) * dt;
             u = u_new;
 
             // Save solutions at requested times
             for (size_t i = 0; i < target_times.size(); i++) {
                 if ((fabs(t - target_times[i]) < (dt / 2.0)) && (software_solutions.size() < i + 1)) {
-                    MatrixXd sol(n, n);
+                    MatrixXf sol(n, n);
                     for (int row = 0; row < n; row++)
                         for (int col = 0; col < n; col++)
                             sol(row, col) = u(row * n + col);
-
                     software_solutions.push_back(sol);
                     software_actual_times.push_back(t);
                     cout << "Saved solution at t = " << t << endl;
@@ -318,10 +302,10 @@ public:
         }
     }
 
-    const vector<MatrixXd>& getHardwareSolutions() const { return hardware_solutions; }
+    const vector<MatrixXf>& getHardwareSolutions() const { return hardware_solutions; }
     const vector<float>& getHardwareActualTimes() const { return hardware_actual_times; }
 
-    const vector<MatrixXd>& getSoftwareSolutions() const { return software_solutions; }
+    const vector<MatrixXf>& getSoftwareSolutions() const { return software_solutions; }
     const vector<float>& getSoftwareActualTimes() const { return software_actual_times; }
 
     void printHostElapsedTime() { 
@@ -343,8 +327,8 @@ public:
         }
 
         for (size_t k = 0; k < hardware_solutions.size(); k++) {
-            const MatrixXd& H = hardware_solutions[k];
-            const MatrixXd& S = software_solutions[k];
+            const MatrixXf& H = hardware_solutions[k];
+            const MatrixXf& S = software_solutions[k];
 
             if (H.rows() != S.rows() || H.cols() != S.cols()) {
                 cerr << "Dimension mismatch at solution " << k << endl;
@@ -352,7 +336,7 @@ public:
             }
 
             // Compute difference
-            MatrixXd diff = H - S;
+            MatrixXf diff = H - S;
 
             double l2_error = diff.norm();        // L2 norm of difference
             double l2_ref   = S.norm();           // L2 norm of reference
@@ -379,14 +363,16 @@ private:
     int n_steps;    // number of steps
     float h;       // grid spacing
     int d = -4;     // diagonal value
+    float alpha, beta;
+    const float one = 1.0f;
     int num_bits = 8;
     int q_levels = (1 << num_bits) - 1;
     int numVCores, numHCores, numVectorsPerCore, numElementsPerVector;
 
     vector<float> x, y;
-    MatrixXd A, R;
-    VectorXd u, u_new, start_u;
-    vector<MatrixXd> hardware_solutions, software_solutions;
+    MatrixXf A, R;
+    VectorXf u, u_new, start_u;
+    vector<MatrixXf> hardware_solutions, software_solutions;
     vector<float> hardware_actual_times, software_actual_times;
     std::chrono::duration<float, std::milli> hostElapsedTime = std::chrono::duration<float, std::milli>::zero();
     std::chrono::duration<float, std::milli> swElapsedTime = std::chrono::duration<float, std::milli>::zero();
@@ -402,7 +388,7 @@ private:
     std::vector<uint8_t> matR;
 
     void buildLaplacian() {
-        A = MatrixXd::Zero(N, N);
+        A = MatrixXf::Zero(N, N);
         for (int i = 0; i < n; i++) {
             for (int j = 0; j < n; j++) {
                 int idx = i * n + j;
@@ -415,8 +401,8 @@ private:
         }
     }
 
-    VectorXd qFunc(float t) {
-        VectorXd q = VectorXd::Ones(N);
+    VectorXf qFunc(float t) {
+        VectorXf q = VectorXf::Ones(N);
         return 0.1 * sin(2.0 * M_PI * t) * q;
     }
 

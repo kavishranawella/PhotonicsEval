@@ -101,11 +101,11 @@ public:
 
         // Build R
         int d = -4;
-        R = A - d * MatrixXd::Identity(N, N);
+        R = A - d * MatrixXf::Identity(N, N);
         R = R / fabs(d);
 
         // Initial condition (Gaussian)
-        start_u = VectorXd(N);
+        start_u = VectorXf(N);
         for (int i = 0; i < n; i++) {
             for (int j = 0; j < n; j++) {
                 float X = x[j];
@@ -125,7 +125,7 @@ public:
         hardware_actual_times.clear();
 
         u=start_u;
-        u_new = VectorXd(N);
+        u_new = VectorXf(N);
 
         if(initializeHardware()!=PHOTONICS_OK) return;
 
@@ -154,7 +154,7 @@ public:
             // Save solutions at requested times
             for (size_t i = 0; i < target_times.size(); i++) {
                 if ((fabs(t - target_times[i]) < (dt / 2.0)) && (hardware_solutions.size() < i + 1)) {
-                    MatrixXd sol(n, n);
+                    MatrixXf sol(n, n);
                     for (int row = 0; row < n; row++)
                         for (int col = 0; col < n; col++)
                             sol(row, col) = u(row * n + col);
@@ -184,7 +184,7 @@ public:
             float t = k * dt;
 
             // Update equation
-            VectorXd u_new = (dt * a / (h * h)) * R * u
+            VectorXf u_new = (dt * a / (h * h)) * R * u
                            + ((dt * a / (h * h)) * d + 1.0) * u
                            + qFunc(t) * dt;
             u = u_new;
@@ -192,7 +192,7 @@ public:
             // Save solutions at requested times
             for (size_t i = 0; i < target_times.size(); i++) {
                 if ((fabs(t - target_times[i]) < (dt / 2.0)) && (software_solutions.size() < i + 1)) {
-                    MatrixXd sol(n, n);
+                    MatrixXf sol(n, n);
                     for (int row = 0; row < n; row++)
                         for (int col = 0; col < n; col++)
                             sol(row, col) = u(row * n + col);
@@ -221,10 +221,10 @@ public:
         }
     }
 
-    const vector<MatrixXd>& getHardwareSolutions() const { return hardware_solutions; }
+    const vector<MatrixXf>& getHardwareSolutions() const { return hardware_solutions; }
     const vector<float>& getHardwareActualTimes() const { return hardware_actual_times; }
 
-    const vector<MatrixXd>& getSoftwareSolutions() const { return software_solutions; }
+    const vector<MatrixXf>& getSoftwareSolutions() const { return software_solutions; }
     const vector<float>& getSoftwareActualTimes() const { return software_actual_times; }
 
     void printHostElapsedTime() { 
@@ -242,8 +242,8 @@ public:
         }
 
         for (size_t k = 0; k < hardware_solutions.size(); k++) {
-            const MatrixXd& H = hardware_solutions[k];
-            const MatrixXd& S = software_solutions[k];
+            const MatrixXf& H = hardware_solutions[k];
+            const MatrixXf& S = software_solutions[k];
 
             if (H.rows() != S.rows() || H.cols() != S.cols()) {
                 cerr << "Dimension mismatch at solution " << k << endl;
@@ -251,7 +251,7 @@ public:
             }
 
             // Compute difference
-            MatrixXd diff = H - S;
+            MatrixXf diff = H - S;
 
             double l2_error = diff.norm();        // L2 norm of difference
             double l2_ref   = S.norm();           // L2 norm of reference
@@ -282,9 +282,9 @@ private:
     int q_levels = (1 << num_bits) - 1;
 
     vector<float> x, y;
-    MatrixXd A, R;
-    VectorXd u, u_new, start_u;
-    vector<MatrixXd> hardware_solutions, software_solutions;
+    MatrixXf A, R;
+    VectorXf u, u_new, start_u;
+    vector<MatrixXf> hardware_solutions, software_solutions;
     vector<float> hardware_actual_times, software_actual_times;
     std::chrono::duration<float, std::milli> hostElapsedTime = std::chrono::duration<float, std::milli>::zero();
 
@@ -297,7 +297,7 @@ private:
     std::vector<uint8_t> matR;
 
     void buildLaplacian() {
-        A = MatrixXd::Zero(N, N);
+        A = MatrixXf::Zero(N, N);
         for (int i = 0; i < n; i++) {
             for (int j = 0; j < n; j++) {
                 int idx = i * n + j;
@@ -310,8 +310,8 @@ private:
         }
     }
 
-    VectorXd qFunc(float t) {
-        VectorXd q = VectorXd::Ones(N);
+    VectorXf qFunc(float t) {
+        VectorXf q = VectorXf::Ones(N);
         return 0.1 * sin(2.0 * M_PI * t) * q;
     }
 
