@@ -119,7 +119,7 @@ public:
     }
 
     void solveHardware(const vector<float>& target_times) {
-        cout << "Solving Heat Equation using optical format..." << endl;
+        cout << "Solving Heat Equation using optical format on hardware..." << endl;
 
         hardware_solutions.clear();
         hardware_actual_times.clear();
@@ -173,7 +173,7 @@ public:
     }
 
     void solveSoftware(const vector<float>& target_times) {
-        cout << "Solving Heat Equation using optical format..." << endl;
+        cout << "Solving Heat Equation using optical format on software..." << endl;
 
         software_solutions.clear();
         software_actual_times.clear();

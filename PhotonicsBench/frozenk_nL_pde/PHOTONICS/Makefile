@@ -24,7 +24,10 @@ ifeq ($(COMPILE_WITH_JPEG), 1)
 	LDFLAGS += -ljpeg
 endif
 
-debug perf dramsim3_integ: $(EXEC)
+perf dramsim3_integ: $(EXEC)
+
+debug: CXXFLAGS += -g -O0 -fno-omit-frame-pointer
+debug: $(EXEC)
 
 $(EXEC): $(SRC) $(DEPS)
 	$(CXX) $< $(CXXFLAGS) $(LDFLAGS) -o $@

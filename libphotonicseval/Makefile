@@ -50,6 +50,7 @@ endif
 PHOTONICS_SIM_TARGET ?= PHOTONICS_DEVICE_NONE
 CXXFLAGS += -DPHOTONICS_SIM_TARGET=$(PHOTONICS_SIM_TARGET)
 
+debug: CXXFLAGS += -g -O0 -fno-omit-frame-pointer
 debug: $(TARGET)
 	@echo "INFO: libphotonicseval target = $(MAKECMDGOALS), CXXFLAGS = $(CXXFLAGS)"
 

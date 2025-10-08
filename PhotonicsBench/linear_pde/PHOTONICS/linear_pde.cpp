@@ -132,7 +132,7 @@ public:
     }
 
     void solveHardware(const vector<float>& target_times) {
-        cout << "Solving Heat Equation using optical format..." << endl;
+        cout << "Solving Heat Equation using optical format on hardware..." << endl;
 
         hardware_solutions.clear();
         hardware_actual_times.clear();
@@ -175,18 +175,19 @@ public:
                     cout << "Saved solution at t = " << t << endl;
                 }
             }
-            auto end = std::chrono::high_resolution_clock::now();
-            hostElapsedTime += (end - start);
+            hostElapsedTime += (std::chrono::high_resolution_clock::now() - start);
         }
     }
 
     void solveSoftware(const vector<float>& target_times) {
-        cout << "Solving Heat Equation using optical format..." << endl;
+        cout << "Solving Heat Equation using optical format on software..." << endl;
 
         software_solutions.clear();
         software_actual_times.clear();
 
         u=start_u;
+
+        auto start = std::chrono::high_resolution_clock::now();
 
         for (int k = 1; k <= n_steps; k++) {
             float t = k * dt;
@@ -211,6 +212,7 @@ public:
                 }
             }
         }
+        swElapsedTime = (std::chrono::high_resolution_clock::now() - start);
     }
 
     void printHardwareSolutions() const {
@@ -237,6 +239,10 @@ public:
 
     void printHostElapsedTime() { 
       cout << "Host elapsed time: " << std::fixed << std::setprecision(3) << hostElapsedTime.count() << " ms." << endl;
+    }
+
+    void printSWElapsedTime() { 
+      cout << "Software elapsed time: " << std::fixed << std::setprecision(3) << swElapsedTime.count() << " ms." << endl;
     }
 
     void compareSolutions(){
@@ -296,6 +302,7 @@ private:
     vector<MatrixXd> hardware_solutions, software_solutions;
     vector<float> hardware_actual_times, software_actual_times;
     std::chrono::duration<float, std::milli> hostElapsedTime = std::chrono::duration<float, std::milli>::zero();
+    std::chrono::duration<float, std::milli> swElapsedTime = std::chrono::duration<float, std::milli>::zero();
 
     PhotonicsObjId matAObject;
     PhotonicsObjId outObject;
@@ -446,6 +453,7 @@ int main(int argc, char *argv[])
 
   photonicsShowStats();
   solver.printHostElapsedTime();
+  solver.printSWElapsedTime();
 
   return 0;
 }
