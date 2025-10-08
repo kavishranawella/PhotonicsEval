@@ -1,4 +1,4 @@
-# Makefile: C++ version of vgg13
+# Makefile: C++ version of linear_pde
 # Copyright (c) 2024 University of Virginia
 # This file is licensed under the MIT License.
 # See the LICENSE file in the root of this repository for more details.
@@ -16,6 +16,15 @@ LDFLAGS += -pthread  # <-- ADD THIS LINE
 
 EXEC := linear_pde.out
 SRC := linear_pde.cpp
+
+USE_CUDA ?= 1        # <-- Enable GPU support (set to 0 to disable)
+ifeq ($(USE_CUDA),1)
+	CUDA_PATH ?= /usr/local/cuda-12.4
+	CXXFLAGS  += -DUSE_GPU_SOLVER=1 -I$(CUDA_PATH)/include
+	LDFLAGS   += -L$(CUDA_PATH)/lib64 -lcublas -lcudart
+else
+	CXXFLAGS  += -DUSE_GPU_SOLVER=0
+endif
 
 COMPILE_WITH_JPEG ?= 0
 ifeq ($(COMPILE_WITH_JPEG), 1)

@@ -18,6 +18,10 @@
 #include <chrono>
 #include <cassert>
 #include <Eigen/Dense>
+#if USE_GPU_SOLVER
+#include <cublas_v2.h>
+#include <cuda_runtime.h>
+#endif
 
 using namespace std;
 using namespace Eigen;
@@ -180,15 +184,96 @@ public:
     }
 
     void solveSoftware(const vector<float>& target_times) {
-        cout << "Solving Heat Equation using optical format on software..." << endl;
+        cout << "Solving Heat Equation using optical format on software with "
+            << (USE_GPU_SOLVER ? "GPU..." : "CPU...") << endl;
 
         software_solutions.clear();
         software_actual_times.clear();
+        u = start_u;
 
-        u=start_u;
+    #if USE_GPU_SOLVER
+        // ------------------------------
+        // GPU (cuBLAS) implementation
+        // ------------------------------
+        int Nf = static_cast<int>(N);
+        size_t bytes_R = N * N * sizeof(float);
+        size_t bytes_u = N * sizeof(float);
+
+        // Convert Eigen matrix/vector to float arrays
+        MatrixXf Rf = R.cast<float>();
+        VectorXf uf = u.cast<float>();
+        VectorXf u_newf(N);
+
+        // Allocate GPU memory
+        float *d_R, *d_u, *d_u_new;
+        cudaMalloc(&d_R, bytes_R);
+        cudaMalloc(&d_u, bytes_u);
+        cudaMalloc(&d_u_new, bytes_u);
+
+        // Copy initial data
+        cudaMemcpy(d_R, Rf.data(), bytes_R, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_u, uf.data(), bytes_u, cudaMemcpyHostToDevice);
+
+        // cuBLAS setup
+        cublasHandle_t handle;
+        cublasCreate(&handle);
 
         auto start = std::chrono::high_resolution_clock::now();
+        for (int k = 1; k <= n_steps; k++) {
+            float t = k * dt;
+            const float alpha = (dt * a / (h * h));
+            const float beta  = ((dt * a / (h * h)) * d + 1.0);
 
+            // Compute: u_new = alpha * R * u + beta * u
+            // (R is N×N, u is N×1)
+            cublasSgemv(handle, CUBLAS_OP_N,
+                        Nf, Nf,
+                        &alpha,
+                        d_R, Nf,
+                        d_u, 1,
+                        &beta,
+                        d_u, 1);
+
+            // Add source term qFunc(t) * dt
+            VectorXf qf = qFunc(t).cast<float>() * dt;
+            cudaMemcpy(d_u_new, qf.data(), bytes_u, cudaMemcpyHostToDevice);
+
+            // Combine: u = u_new + q
+            // Use Thrust or a custom CUDA kernel for elementwise addition (simplest below)
+            // For now just copy d_u (cuBLAS output) back to host and add qf on CPU
+            cudaMemcpy(u_newf.data(), d_u, bytes_u, cudaMemcpyDeviceToHost);
+            u_newf += qf;
+
+            // Copy new u to device for next iteration
+            cudaMemcpy(d_u, u_newf.data(), bytes_u, cudaMemcpyHostToDevice);
+
+            // Save solutions at requested times
+            for (size_t i = 0; i < target_times.size(); i++) {
+                if ((fabs(t - target_times[i]) < (dt / 2.0)) && (software_solutions.size() < i + 1)) {
+                    MatrixXd sol(n, n);
+                    for (int row = 0; row < n; row++)
+                        for (int col = 0; col < n; col++)
+                            sol(row, col) = static_cast<double>(u_newf(row * n + col));
+                    software_solutions.push_back(sol);
+                    software_actual_times.push_back(t);
+                    cout << "Saved solution at t = " << t << endl;
+                }
+            }
+        }
+        swElapsedTime = (std::chrono::high_resolution_clock::now() - start);
+
+        cublasDestroy(handle);
+        cudaFree(d_R);
+        cudaFree(d_u);
+        cudaFree(d_u_new);
+
+        u = u_newf.cast<double>();
+
+    #else
+        // ------------------------------
+        // CPU (Eigen) implementation
+        // ------------------------------
+        auto start = std::chrono::high_resolution_clock::now();
         for (int k = 1; k <= n_steps; k++) {
             float t = k * dt;
 
@@ -213,6 +298,8 @@ public:
             }
         }
         swElapsedTime = (std::chrono::high_resolution_clock::now() - start);
+    #endif
+
     }
 
     void printHardwareSolutions() const {
