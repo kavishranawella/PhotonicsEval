@@ -89,7 +89,7 @@ public:
         : params(params), dt(dt), a(a), t_final(t_final), num_bits(num_bits)
     {   
         if(initializeHardware()!=PHOTONICS_OK) {
-          std::cout << "Function: " << __func__ << "Abort: intializeHardware() failed" << std::endl;
+          std::cout << "❌ Function: " << __func__ << "Abort: intializeHardware() failed" << std::endl;
           return;
         }
 
@@ -141,11 +141,11 @@ public:
         photonicsFreeMat(matAObject);
     }
 
-    void solveHardware(const vector<float>& target_times) {
-        cout << "Solving Heat Equation using optical format on hardware..." << endl;
+    void solvePhotonics(const vector<float>& target_times) {
+        cout << "\nSolving Heat Equation using optical format on Photonics+CPU..." << endl;
 
-        hardware_solutions.clear();
-        hardware_actual_times.clear();
+        photonics_solutions.clear();
+        photonics_actual_times.clear();
 
         u=start_u;
         u_temp = VectorXf(N);
@@ -155,7 +155,7 @@ public:
         status = photonicsCopyHostToDevice((void *)matR.data(), matAObject);
         if (status != PHOTONICS_OK)
         {
-          std::cout << "Function: " << __func__ << "Abort: photonicsCopyHostToDevice failed between matAObject and matA" << std::endl;
+          std::cout << "❌ Function: " << __func__ << "Abort: photonicsCopyHostToDevice failed between matAObject and matA" << std::endl;
           return;
         }
 
@@ -175,14 +175,14 @@ public:
 
             // Save solutions at requested times
             for (size_t i = 0; i < target_times.size(); i++) {
-                if ((fabs(t - target_times[i]) < (dt / 2.0)) && (hardware_solutions.size() < i + 1)) {
+                if ((fabs(t - target_times[i]) < (dt / 2.0)) && (photonics_solutions.size() < i + 1)) {
                     MatrixXf sol(n, n);
                     for (int row = 0; row < n; row++)
                         for (int col = 0; col < n; col++)
                             sol(row, col) = u(row * n + col);
 
-                    hardware_solutions.push_back(sol);
-                    hardware_actual_times.push_back(t);
+                    photonics_solutions.push_back(sol);
+                    photonics_actual_times.push_back(t);
                     cout << "Saved solution at t = " << t << endl;
                 }
             }
@@ -190,140 +190,235 @@ public:
         }
     }
 
-    void solveSoftware(const vector<float>& target_times) {
-        cout << "Solving Heat Equation using optical format on software with "
-            << (USE_GPU_SOLVER ? "GPU..." : "CPU...") << endl;
+    // ------------------------------
+    // CPU (Eigen) implementation
+    // ------------------------------
+    void solveCPU(const vector<float>& target_times) {
+        cout << "\nSolving Heat Equation using optical format on software with CPU..." << endl;
 
-        software_solutions.clear();
-        software_actual_times.clear();
+        cpu_solutions.clear();
+        cpu_actual_times.clear();
         u = start_u;
-
-    #if USE_GPU_SOLVER
-        size_t bytes_R = N * N * sizeof(float);
-        size_t bytes_u = N * sizeof(float);
-
-        // Allocate GPU memory
-        float *d_R, *d_u, *d_one;
-        cudaMalloc(&d_R, bytes_R);
-        cudaMalloc(&d_u, bytes_u);
-        cudaMalloc(&d_one, bytes_u);
-
-        // Copy initial data
-        cudaMemcpy(d_R, R.data(), bytes_R, cudaMemcpyHostToDevice);
-        cudaMemcpy(d_u, u.data(), bytes_u, cudaMemcpyHostToDevice);
-        cudaMemcpy(d_one, q_one.data(), bytes_u, cudaMemcpyHostToDevice);
-
-        // cuBLAS setup
-        cublasHandle_t handle;
-        cublasCreate(&handle);
-    #endif
 
         auto start = std::chrono::high_resolution_clock::now();
         for (int k = 1; k <= n_steps; k++) {
             float t = k * dt;
             float gamma = 0.1 * sin(2.0 * M_PI * t) * dt;
 
-        #if USE_GPU_SOLVER
-            // ------------------------------
-            // GPU (cuBLAS) implementation
-            // ------------------------------
-
-            // Compute: u = alpha * R * u + beta * u
-            // (R is N×N, u is N×1)
-            cublasSgemv(handle, CUBLAS_OP_N,
-                        N, N, &alpha, d_R, 
-                        N, d_u, 1, 
-                        &beta, d_u, 1);
-
-            // d_u_new = d_u_new + gamma * d_one
-            cublasSaxpy(handle, N, &gamma, d_one, 1, d_u, 1);
-
-        #else
-            // ------------------------------
-            // CPU (Eigen) implementation
-            // ------------------------------
-
             // Update equation
             u_new = alpha * R * u + beta * u + gamma * q_one;
             u = u_new;
 
-        #endif
-
             // Save solutions at requested times
             for (size_t i = 0; i < target_times.size(); i++) {
-                if ((fabs(t - target_times[i]) < (dt / 2.0)) && (software_solutions.size() < i + 1)) {
+                if ((fabs(t - target_times[i]) < (dt / 2.0)) && (cpu_solutions.size() < i + 1)) {
                     MatrixXf sol(n, n);
-                #if USE_GPU_SOLVER
-                    cudaMemcpy(u.data(), d_u, bytes_u, cudaMemcpyDeviceToHost);
-                #endif
                     for (int row = 0; row < n; row++)
                         for (int col = 0; col < n; col++)
                             sol(row, col) = u(row * n + col);
-                    software_solutions.push_back(sol);
-                    software_actual_times.push_back(t);
+                    cpu_solutions.push_back(sol);
+                    cpu_actual_times.push_back(t);
                     cout << "Saved solution at t = " << t << endl;
                 }
             }
         }
-        swElapsedTime = (std::chrono::high_resolution_clock::now() - start);
-
-    #if USE_GPU_SOLVER
-
-        cublasDestroy(handle);
-        cudaFree(d_R);
-        cudaFree(d_u);
-        cudaFree(d_one);
-
-    #endif
+        cpuElapsedTime = (std::chrono::high_resolution_clock::now() - start);
 
     }
 
-    void printHardwareSolutions() const {
-        cout << "\nPrinting Hardware Solutions...\n" << endl;
-        for (size_t k = 0; k < hardware_solutions.size(); k++) {
-            cout << "\nSolution at t = " << hardware_actual_times[k] << ":\n";
-            cout << hardware_solutions[k] << endl;
+    // ------------------------------
+    // GPU (cuBLAS) implementation
+    // ------------------------------
+    void solveGPU(const vector<float>& target_times) {
+        #if USE_GPU_SOLVER
+            cout << "\nSolving Heat Equation using optical format on software with GPU..." << endl;
+            gpu_solutions.clear();
+            gpu_actual_times.clear();
+            u = start_u;
+
+            size_t bytes_R = N * N * sizeof(float);
+            size_t bytes_u = N * sizeof(float);
+
+            // Allocate GPU memory
+            float *d_R, *d_u, *d_one;
+            cudaMalloc(&d_R, bytes_R);
+            cudaMalloc(&d_u, bytes_u);
+            cudaMalloc(&d_one, bytes_u);
+
+            // Copy initial data
+            cudaMemcpy(d_R, R.data(), bytes_R, cudaMemcpyHostToDevice);
+            cudaMemcpy(d_u, u.data(), bytes_u, cudaMemcpyHostToDevice);
+            cudaMemcpy(d_one, q_one.data(), bytes_u, cudaMemcpyHostToDevice);
+
+            // cuBLAS setup
+            cublasHandle_t handle;
+            cublasCreate(&handle);
+
+            auto start = std::chrono::high_resolution_clock::now();
+            for (int k = 1; k <= n_steps; k++) {
+                float t = k * dt;
+                float gamma = 0.1 * sin(2.0 * M_PI * t) * dt;
+
+                // Compute: u = alpha * R * u + beta * u
+                // (R is N×N, u is N×1)
+                cublasSgemv(handle, CUBLAS_OP_N,
+                            N, N, &alpha, d_R, 
+                            N, d_u, 1, 
+                            &beta, d_u, 1);
+
+                // d_u_new = d_u_new + gamma * d_one
+                cublasSaxpy(handle, N, &gamma, d_one, 1, d_u, 1);
+
+                // Save solutions at requested times
+                for (size_t i = 0; i < target_times.size(); i++) {
+                    if ((fabs(t - target_times[i]) < (dt / 2.0)) && (gpu_solutions.size() < i + 1)) {
+                        MatrixXf sol(n, n);
+                        cudaMemcpy(u.data(), d_u, bytes_u, cudaMemcpyDeviceToHost);
+                        for (int row = 0; row < n; row++)
+                            for (int col = 0; col < n; col++)
+                                sol(row, col) = u(row * n + col);
+                        gpu_solutions.push_back(sol);
+                        gpu_actual_times.push_back(t);
+                        cout << "Saved solution at t = " << t << endl;
+                    }
+                }
+            }
+            gpuElapsedTime = (std::chrono::high_resolution_clock::now() - start);
+
+            cublasDestroy(handle);
+            cudaFree(d_R);
+            cudaFree(d_u);
+            cudaFree(d_one);
+        #else
+            cout << "GPU implementation not possible..." << endl;
+        #endif
+    }
+
+    void printPhotonicsSolutions() const {
+        cout << "\nPrinting Photonics Solutions...\n" << endl;
+        for (size_t k = 0; k < photonics_solutions.size(); k++) {
+            cout << "\nSolution at t = " << photonics_actual_times[k] << ":\n";
+            cout << photonics_solutions[k] << endl;
         }
     }
 
-    void printSoftwareSolutions() const {
-        cout << "\nPrinting Software Solutions...\n" << endl;
-        for (size_t k = 0; k < software_solutions.size(); k++) {
-            cout << "\nSolution at t = " << software_actual_times[k] << ":\n";
-            cout << software_solutions[k] << endl;
+    void printCPUSolutions() const {
+        cout << "\nPrinting CPU Solutions...\n" << endl;
+        for (size_t k = 0; k < cpu_solutions.size(); k++) {
+            cout << "\nSolution at t = " << cpu_actual_times[k] << ":\n";
+            cout << cpu_solutions[k] << endl;
         }
     }
 
-    const vector<MatrixXf>& getHardwareSolutions() const { return hardware_solutions; }
-    const vector<float>& getHardwareActualTimes() const { return hardware_actual_times; }
+    void printGPUSolutions() const {
+        #if USE_GPU_SOLVER
+            cout << "\nPrinting GPU Solutions...\n" << endl;
+            for (size_t k = 0; k < gpu_solutions.size(); k++) {
+                cout << "\nSolution at t = " << gpu_actual_times[k] << ":\n";
+                cout << gpu_solutions[k] << endl;
+            }
+        #else
+          cout << "No GPU implementation available....." << endl;
+        #endif
+    }
 
-    const vector<MatrixXf>& getSoftwareSolutions() const { return software_solutions; }
-    const vector<float>& getSoftwareActualTimes() const { return software_actual_times; }
+    const vector<MatrixXf>& getPhotonicsSolutions() const { return photonics_solutions; }
+    const vector<float>& getPhotonicsActualTimes() const { return photonics_actual_times; }
+
+    const vector<MatrixXf>& getCPUSolutions() const { return cpu_solutions; }
+    const vector<float>& getCPUActualTimes() const { return cpu_actual_times; }
+
+    const vector<MatrixXf>& getGPUSolutions() const { return gpu_solutions; }
+    const vector<float>& getGPUActualTimes() const { return gpu_actual_times; }
 
     void printHostElapsedTime() { 
       cout << "Host elapsed time: " << std::fixed << std::setprecision(3) << hostElapsedTime.count() << " ms." << endl;
     }
 
-    void printSWElapsedTime() { 
-      cout << "Software elapsed time: " << std::fixed << std::setprecision(3) << swElapsedTime.count() << " ms." << endl;
+    void printQuantElapsedTime() { 
+      cout << "Quantization elapsed time: " << std::fixed << std::setprecision(3) << quantElapsedTime.count() << " ms." << endl;
+    }
+    
+    void printCPUElapsedTime() { 
+      cout << "CPU elapsed time: " << std::fixed << std::setprecision(3) << cpuElapsedTime.count() << " ms." << endl;
     }
 
-    void compareSolutions(){
-        cout << "\nComparing Hardware and Software Solutions...\n";
+    void printGPUElapsedTime() { 
+      #if USE_GPU_SOLVER
+        cout << "GPU elapsed time: " << std::fixed << std::setprecision(3) << gpuElapsedTime.count() << " ms." << endl;
+      #else
+        cout << "No GPU implementation available....." << endl;
+      #endif
+    }
 
-        if (hardware_solutions.size() != software_solutions.size()) {
-            cerr << "Warning: Mismatch in number of saved solutions! "
-                << "Hardware = " << hardware_solutions.size()
-                << ", Software = " << software_solutions.size() << endl;
+    void compareSWSolutions() { 
+      #if USE_GPU_SOLVER
+        cout << "\nVerifying consistency of CPU & GPU Results..." << endl;
+
+        if (gpu_solutions.size() != cpu_solutions.size()) {
+            cerr << "❌ Error: Mismatch in number of saved solutions! "
+                << "CPU = " << cpu_solutions.size()
+                << ", GPU = " << gpu_solutions.size() << endl;
+            throw std::runtime_error("Solution count mismatch between CPU and GPU");
+        }
+
+        for (size_t k = 0; k < cpu_solutions.size(); k++) {
+            const MatrixXf &H = cpu_solutions[k];
+            const MatrixXf &S = gpu_solutions[k];
+
+            if (H.rows() != S.rows() || H.cols() != S.cols()) {
+                cerr << "❌ Error: Dimension mismatch at solution " << k
+                    << " (" << H.rows() << "x" << H.cols()
+                    << " vs " << S.rows() << "x" << S.cols() << ")" << endl;
+                throw std::runtime_error("Dimension mismatch between CPU and GPU results");
+            }
+
+            // Compare element-wise
+            for (int i = 0; i < H.rows(); i++) {
+                for (int j = 0; j < H.cols(); j++) {
+                    float a = H(i, j);
+                    float b = S(i, j);
+                    float diff = fabs(a - b);
+
+                    if (diff > tolerance || std::isnan(a) || std::isnan(b)) {
+                        cerr << std::fixed << setprecision(7);
+                        cerr << "❌ Mismatch at t = " << cpu_actual_times[k]
+                            << ", index (" << i << "," << j << ")"
+                            << ": CPU = " << a
+                            << ", GPU = " << b
+                            << ", |Δ| = " << diff
+                            << " > tol(" << tolerance << ")" << endl;
+
+                        throw std::runtime_error("CPU and GPU results differ beyond tolerance");
+                    }
+                }
+            }
+        }
+
+        cout << "✅ All CPU and GPU results match within tolerance "
+            << tolerance << "!" << endl;
+
+      #else
+        cout << "\nNo GPU implementation available....." << endl;
+      #endif
+    }
+
+    void compareWithPhotonics(){
+        cout << "\nComparing Photonics and Software Solutions...\n";
+
+        if (photonics_solutions.size() != cpu_solutions.size()) {
+            cerr << "❌ Error: Mismatch in number of saved solutions! "
+                << "Photonics = " << photonics_solutions.size()
+                << ", CPU = " << cpu_solutions.size() << endl;
             return;
         }
 
-        for (size_t k = 0; k < hardware_solutions.size(); k++) {
-            const MatrixXf& H = hardware_solutions[k];
-            const MatrixXf& S = software_solutions[k];
+        for (size_t k = 0; k < photonics_solutions.size(); k++) {
+            const MatrixXf& H = photonics_solutions[k];
+            const MatrixXf& S = cpu_solutions[k];
 
             if (H.rows() != S.rows() || H.cols() != S.cols()) {
-                cerr << "Dimension mismatch at solution " << k << endl;
+                cerr << "❌ Error: Dimension mismatch at solution " << k << endl;
                 continue;
             }
 
@@ -336,7 +431,7 @@ public:
 
             double max_abs_error = diff.cwiseAbs().maxCoeff();
 
-            cout << "t = " << software_actual_times[k]
+            cout << "t = " << cpu_actual_times[k]
                 << " | L2 Error = " << l2_error
                 << " | Relative Error = " << rel_error
                 << " | Max Abs Error = " << max_abs_error
@@ -355,6 +450,7 @@ private:
     int n_steps;    // number of steps
     float h;       // grid spacing
     int d = -4;     // diagonal value
+    const float tolerance = 1e-5f;
     float alpha, beta, gamma;
     int num_bits = 8;
     int q_levels = (1 << num_bits) - 1;
@@ -364,10 +460,12 @@ private:
     MatrixXf A, R;
     VectorXf u, u_new, u_temp, start_u;
     VectorXf q_one;
-    vector<MatrixXf> hardware_solutions, software_solutions;
-    vector<float> hardware_actual_times, software_actual_times;
+    vector<MatrixXf> photonics_solutions, cpu_solutions, gpu_solutions;
+    vector<float> photonics_actual_times, cpu_actual_times, gpu_actual_times;
     std::chrono::duration<float, std::milli> hostElapsedTime = std::chrono::duration<float, std::milli>::zero();
-    std::chrono::duration<float, std::milli> swElapsedTime = std::chrono::duration<float, std::milli>::zero();
+    std::chrono::duration<float, std::milli> quantElapsedTime = std::chrono::duration<float, std::milli>::zero();
+    std::chrono::duration<float, std::milli> cpuElapsedTime = std::chrono::duration<float, std::milli>::zero();
+    std::chrono::duration<float, std::milli> gpuElapsedTime = std::chrono::duration<float, std::milli>::zero();
 
     PhotonicsObjId matAObject;
     PhotonicsObjId outObject;
@@ -411,21 +509,21 @@ private:
       matAObject = photonicsAllocMat(N*N, PHOTONICS_FP32);
       if (matAObject == -1)
       {
-        std::cout << "Function: " << __func__ << "Abort: photonicsAlloc failed for matrix A" << std::endl;
+        std::cout << "❌ Function: " << __func__ << "Abort: photonicsAlloc failed for matrix A" << std::endl;
         return PHOTONICS_ERROR;
       }
       
       outObject = photonicsAllocAssociatedDestVec(matAObject, PHOTONICS_FP32);
       if (outObject == -1)
       {
-        std::cout << "Function: " << __func__ << "Abort: photonicsAllocAssociated failed for vector U = " << outObject << std::endl;
+        std::cout << "❌ Function: " << __func__ << "Abort: photonicsAllocAssociated failed for vector U = " << outObject << std::endl;
         return PHOTONICS_ERROR;
       }
       
       vecUObject = photonicsAllocAssociatedSrcVec(matAObject, PHOTONICS_FP32);
       if (vecUObject == -1)
       {
-        std::cout << "Function: " << __func__ << "Abort: photonicsAllocAssociated failed for vector U = " << vecUObject << std::endl;
+        std::cout << "❌ Function: " << __func__ << "Abort: photonicsAllocAssociated failed for vector U = " << vecUObject << std::endl;
         return PHOTONICS_ERROR;
       }
 
@@ -439,21 +537,21 @@ private:
       status = photonicsCopyHostToDevice((void *)vecU.data(), vecUObject);
       if (status != PHOTONICS_OK)
       {
-        std::cout << "Function: " << __func__ << "Abort: photonicsCopyHostToDevice failed between vecUObject and vecU at i=" << i << std::endl;
+        std::cout << "❌ Function: " << __func__ << "Abort: photonicsCopyHostToDevice failed between vecUObject and vecU at i=" << i << std::endl;
         return;
       }
 
       status = photonicsMvm(matAObject, vecUObject, outObject);
       if (status != PHOTONICS_OK)
       {
-        std::cout << "Function: " << __func__ << "Abort: photonicsMvm Failed at i=" << i << std::endl;
+        std::cout << "❌ Function: " << __func__ << "Abort: photonicsMvm Failed at i=" << i << std::endl;
         return;
       }
 
       status = photonicsCopyDeviceToHost(outObject, out.data());
       if (status != PHOTONICS_OK)
       {
-        std::cout << "Function: " << __func__ << "Abort: photonicsCopyDeviceToHost failed between outObject and out at i=" << i << std::endl;
+        std::cout << "❌ Function: " << __func__ << "Abort: photonicsCopyDeviceToHost failed between outObject and out at i=" << i << std::endl;
         return;
       }
       dequantize_vector(-1.0, 1.0);
@@ -473,23 +571,28 @@ private:
     }
 
     void quantize_vector(float min_val, float max_val) {
-        float scale = (max_val - min_val) / q_levels;
+        const float scale = (max_val - min_val) / q_levels;
+        auto start2 = std::chrono::high_resolution_clock::now();
         for (int i = 0; i < N; i++) {
-            int q = std::round((u(i) - min_val) / scale);
-            q = std::max(0, std::min(q, q_levels));
+            float val = (u(i) - min_val) / scale;
+            int q = static_cast<int>(std::round(val));
+            q = std::clamp(q, 0, q_levels);
             vecU[i] = static_cast<uint8_t>(q);
         }
+        quantElapsedTime += (std::chrono::high_resolution_clock::now() - start2);
     }
 
     void dequantize_vector(float min_val, float max_val) {
-        float scale = (max_val - min_val) / q_levels;
+        const float scale = (max_val - min_val) / q_levels;
+        auto start2 = std::chrono::high_resolution_clock::now();
         for (int i = 0; i < N; i++) {
-            uint8_t acc = 0;
+            int acc = 0;
             for (int j = 0; j < numHCores; j++){
               acc = acc + out[i * numHCores + j];
             }
             u_temp(i) = acc * scale + min_val;
         }
+        quantElapsedTime += (std::chrono::high_resolution_clock::now() - start2);
     }
 };
 
@@ -503,17 +606,24 @@ int main(int argc, char *argv[])
 
   vector<float> target_times = {0.025, 0.125, 0.375};
 
-  solver.solveHardware(target_times);
-  //solver.printHardwareSolutions();
+  solver.solvePhotonics(target_times);
+  //solver.printPhotonicsSolutions();
 
-  solver.solveSoftware(target_times);
-  //solver.printSoftwareSolutions();
+  solver.solveCPU(target_times);
+  //solver.printCPUSolutions();
 
-  solver.compareSolutions();
+  solver.solveGPU(target_times);
+  //solver.printGPUSolutions();
+
+  solver.compareSWSolutions();
+  solver.compareWithPhotonics();
+
 
   photonicsShowStats();
   solver.printHostElapsedTime();
-  solver.printSWElapsedTime();
+  solver.printQuantElapsedTime();
+  solver.printCPUElapsedTime();
+  solver.printGPUElapsedTime();
 
   return 0;
 }
