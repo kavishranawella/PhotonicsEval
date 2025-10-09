@@ -128,6 +128,8 @@ public:
             }
         }
 
+        q_one = VectorXf::Ones(N);
+
         matR.resize(N * N);
         out.resize(N * numHCores);
         vecU.resize(N);
@@ -146,6 +148,7 @@ public:
         hardware_actual_times.clear();
 
         u=start_u;
+        u_temp = VectorXf(N);
         u_new = VectorXf(N);
 
         quantize_matrix(-1.0, 1.0);
@@ -164,9 +167,11 @@ public:
             auto start = std::chrono::high_resolution_clock::now();
 
             float t = k * dt;
+            float gamma = 0.1 * sin(2.0 * M_PI * t) * dt;
 
             // Update equation
-            u = alpha * u_new + beta * u + qFunc(t) * dt;
+            u_new = alpha * u_temp + beta * u + gamma * q_one;
+            u = u_new;
 
             // Save solutions at requested times
             for (size_t i = 0; i < target_times.size(); i++) {
@@ -194,52 +199,63 @@ public:
         u = start_u;
 
     #if USE_GPU_SOLVER
-        // ------------------------------
-        // GPU (cuBLAS) implementation
-        // ------------------------------
         size_t bytes_R = N * N * sizeof(float);
         size_t bytes_u = N * sizeof(float);
 
         // Allocate GPU memory
-        float *d_R, *d_u, *d_qf;
+        float *d_R, *d_u, *d_one;
         cudaMalloc(&d_R, bytes_R);
         cudaMalloc(&d_u, bytes_u);
-        cudaMalloc(&d_qf, bytes_u);
+        cudaMalloc(&d_one, bytes_u);
 
         // Copy initial data
         cudaMemcpy(d_R, R.data(), bytes_R, cudaMemcpyHostToDevice);
         cudaMemcpy(d_u, u.data(), bytes_u, cudaMemcpyHostToDevice);
+        cudaMemcpy(d_one, q_one.data(), bytes_u, cudaMemcpyHostToDevice);
 
         // cuBLAS setup
         cublasHandle_t handle;
         cublasCreate(&handle);
+    #endif
 
         auto start = std::chrono::high_resolution_clock::now();
         for (int k = 1; k <= n_steps; k++) {
             float t = k * dt;
+            float gamma = 0.1 * sin(2.0 * M_PI * t) * dt;
 
-            // Compute: u_new = alpha * R * u + beta * u
+        #if USE_GPU_SOLVER
+            // ------------------------------
+            // GPU (cuBLAS) implementation
+            // ------------------------------
+
+            // Compute: u = alpha * R * u + beta * u
             // (R is N×N, u is N×1)
             cublasSgemv(handle, CUBLAS_OP_N,
-                        N, N,
-                        &alpha,
-                        d_R, N,
-                        d_u, 1,
-                        &beta,
-                        d_u, 1);
+                        N, N, &alpha, d_R, 
+                        N, d_u, 1, 
+                        &beta, d_u, 1);
 
-            // Add source term qFunc(t) * dt
-            VectorXf qf = qFunc(t) * dt;
-            cudaMemcpy(d_qf, qf.data(), bytes_u, cudaMemcpyHostToDevice);
+            // d_u_new = d_u_new + gamma * d_one
+            cublasSaxpy(handle, N, &gamma, d_one, 1, d_u, 1);
 
-            // d_u_new = d_u_new + 1.0f * d_qf
-            cublasSaxpy(handle, N, &one, d_qf, 1, d_u, 1);
+        #else
+            // ------------------------------
+            // CPU (Eigen) implementation
+            // ------------------------------
+
+            // Update equation
+            u_new = alpha * R * u + beta * u + gamma * q_one;
+            u = u_new;
+
+        #endif
 
             // Save solutions at requested times
             for (size_t i = 0; i < target_times.size(); i++) {
                 if ((fabs(t - target_times[i]) < (dt / 2.0)) && (software_solutions.size() < i + 1)) {
                     MatrixXf sol(n, n);
+                #if USE_GPU_SOLVER
                     cudaMemcpy(u.data(), d_u, bytes_u, cudaMemcpyDeviceToHost);
+                #endif
                     for (int row = 0; row < n; row++)
                         for (int col = 0; col < n; col++)
                             sol(row, col) = u(row * n + col);
@@ -250,38 +266,14 @@ public:
             }
         }
         swElapsedTime = (std::chrono::high_resolution_clock::now() - start);
+
+    #if USE_GPU_SOLVER
 
         cublasDestroy(handle);
         cudaFree(d_R);
         cudaFree(d_u);
-        cudaFree(d_qf);
+        cudaFree(d_one);
 
-    #else
-        // ------------------------------
-        // CPU (Eigen) implementation
-        // ------------------------------
-        auto start = std::chrono::high_resolution_clock::now();
-        for (int k = 1; k <= n_steps; k++) {
-            float t = k * dt;
-
-            // Update equation
-            VectorXf u_new = alpha * R * u + beta * u + qFunc(t) * dt;
-            u = u_new;
-
-            // Save solutions at requested times
-            for (size_t i = 0; i < target_times.size(); i++) {
-                if ((fabs(t - target_times[i]) < (dt / 2.0)) && (software_solutions.size() < i + 1)) {
-                    MatrixXf sol(n, n);
-                    for (int row = 0; row < n; row++)
-                        for (int col = 0; col < n; col++)
-                            sol(row, col) = u(row * n + col);
-                    software_solutions.push_back(sol);
-                    software_actual_times.push_back(t);
-                    cout << "Saved solution at t = " << t << endl;
-                }
-            }
-        }
-        swElapsedTime = (std::chrono::high_resolution_clock::now() - start);
     #endif
 
     }
@@ -363,15 +355,15 @@ private:
     int n_steps;    // number of steps
     float h;       // grid spacing
     int d = -4;     // diagonal value
-    float alpha, beta;
-    const float one = 1.0f;
+    float alpha, beta, gamma;
     int num_bits = 8;
     int q_levels = (1 << num_bits) - 1;
     int numVCores, numHCores, numVectorsPerCore, numElementsPerVector;
 
     vector<float> x, y;
     MatrixXf A, R;
-    VectorXf u, u_new, start_u;
+    VectorXf u, u_new, u_temp, start_u;
+    VectorXf q_one;
     vector<MatrixXf> hardware_solutions, software_solutions;
     vector<float> hardware_actual_times, software_actual_times;
     std::chrono::duration<float, std::milli> hostElapsedTime = std::chrono::duration<float, std::milli>::zero();
@@ -399,11 +391,6 @@ private:
                 if (i < n - 1) A(idx, idx + n) = 1;   // bottom
             }
         }
-    }
-
-    VectorXf qFunc(float t) {
-        VectorXf q = VectorXf::Ones(N);
-        return 0.1 * sin(2.0 * M_PI * t) * q;
     }
 
     PhotonicsStatus initializeHardware(){
@@ -501,7 +488,7 @@ private:
             for (int j = 0; j < numHCores; j++){
               acc = acc + out[i * numHCores + j];
             }
-            u_new(i) = acc * scale + min_val;
+            u_temp(i) = acc * scale + min_val;
         }
     }
 };
@@ -512,9 +499,9 @@ int main(int argc, char *argv[])
 
   params.dramConfigFile = (char *) "./configs/photonics/linear_pde.cfg";
 
-  HeatEquationPaperSolver solver(params, 0.01, 1.0, 4.0, 8);
+  HeatEquationPaperSolver solver(params, 0.001, 1.0, 0.4, 8);
 
-  vector<float> target_times = {0.25, 1.25, 3.75};
+  vector<float> target_times = {0.025, 0.125, 0.375};
 
   solver.solveHardware(target_times);
   //solver.printHardwareSolutions();
