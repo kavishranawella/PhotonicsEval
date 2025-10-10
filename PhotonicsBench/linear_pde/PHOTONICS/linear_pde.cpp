@@ -128,7 +128,9 @@ public:
             }
         }
 
-        q_one = VectorXf::Ones(N);
+        q_one_vec = VectorXf::Ones(N);
+
+        out_mat_col.resize(numHCores);
 
         matR.resize(N * N);
         out.resize(N * numHCores);
@@ -170,7 +172,7 @@ public:
             float gamma = 0.1 * sin(2.0 * M_PI * t) * dt;
 
             // Update equation
-            u_new = alpha * u_temp + beta * u + gamma * q_one;
+            u_new = alpha * u_temp + (beta * u.array() + gamma).matrix();
             u = u_new;
 
             // Save solutions at requested times
@@ -206,7 +208,7 @@ public:
             float gamma = 0.1 * sin(2.0 * M_PI * t) * dt;
 
             // Update equation
-            u_new = alpha * R * u + beta * u + gamma * q_one;
+            u_new = alpha * R * u + (beta * u.array() + gamma).matrix();
             u = u_new;
 
             // Save solutions at requested times
@@ -248,7 +250,7 @@ public:
             // Copy initial data
             cudaMemcpy(d_R, R.data(), bytes_R, cudaMemcpyHostToDevice);
             cudaMemcpy(d_u, u.data(), bytes_u, cudaMemcpyHostToDevice);
-            cudaMemcpy(d_one, q_one.data(), bytes_u, cudaMemcpyHostToDevice);
+            cudaMemcpy(d_one, q_one_vec.data(), bytes_u, cudaMemcpyHostToDevice);
 
             // cuBLAS setup
             cublasHandle_t handle;
@@ -337,6 +339,10 @@ public:
 
     void printQuantElapsedTime() { 
       cout << "Quantization elapsed time: " << std::fixed << std::setprecision(3) << quantElapsedTime.count() << " ms." << endl;
+    }
+
+    void printSyncElapsedTime() { 
+      cout << "Photonics Core Synchronization elapsed time: " << std::fixed << std::setprecision(3) << syncElapsedTime.count() << " ms." << endl;
     }
     
     void printCPUElapsedTime() { 
@@ -453,17 +459,20 @@ private:
     const float tolerance = 1e-5f;
     float alpha, beta, gamma;
     int num_bits = 8;
-    int q_levels = (1 << num_bits) - 1;
+    float q_levels = (1 << num_bits) - 1;
     int numVCores, numHCores, numVectorsPerCore, numElementsPerVector;
 
     vector<float> x, y;
     MatrixXf A, R;
-    VectorXf u, u_new, u_temp, start_u;
-    VectorXf q_one;
+    VectorXf u, u_new, u_temp, start_u, q_one_vec;
+    Array<uint8_t, Dynamic, Dynamic> q_mat;
+    Array<uint8_t, Dynamic, 1> q_vec;
+    vector<VectorXi> out_mat_col;
     vector<MatrixXf> photonics_solutions, cpu_solutions, gpu_solutions;
     vector<float> photonics_actual_times, cpu_actual_times, gpu_actual_times;
     std::chrono::duration<float, std::milli> hostElapsedTime = std::chrono::duration<float, std::milli>::zero();
     std::chrono::duration<float, std::milli> quantElapsedTime = std::chrono::duration<float, std::milli>::zero();
+    std::chrono::duration<float, std::milli> syncElapsedTime = std::chrono::duration<float, std::milli>::zero();
     std::chrono::duration<float, std::milli> cpuElapsedTime = std::chrono::duration<float, std::milli>::zero();
     std::chrono::duration<float, std::milli> gpuElapsedTime = std::chrono::duration<float, std::milli>::zero();
 
@@ -473,9 +482,9 @@ private:
     PhotonicsDeviceProperties deviceParams;
 
     PhotonicsStatus status = PHOTONICS_OK;
-    std::vector<uint8_t> vecU;
-    std::vector<uint8_t> out;
-    std::vector<uint8_t> matR;
+    vector<uint8_t> vecU;
+    vector<uint8_t> out;
+    vector<uint8_t> matR;
 
     void buildLaplacian() {
         A = MatrixXf::Zero(N, N);
@@ -560,38 +569,44 @@ private:
 
     // Vector quantization
     void quantize_matrix(float min_val, float max_val) {
-        float scale = (max_val - min_val) / q_levels;
+        const float scale = q_levels / (max_val - min_val);
+        q_mat = (((R.array() - min_val) * scale) + 0.5f)
+                    .cwiseMin(static_cast<float>(q_levels))
+                    .cwiseMax(0.0f)
+                    .cast<uint8_t>();
         for (int i = 0; i < N; i++) {
           for (int j = 0; j < N; j++) {
-            int q = std::round((R(i,j) - min_val) / scale);
-            q = std::max(0, std::min(q, q_levels));
-            matR[i * N + j] = static_cast<uint8_t>(q);
+            matR[i * N + j] = q_mat(i,j);
           }
         }
     }
 
     void quantize_vector(float min_val, float max_val) {
-        const float scale = (max_val - min_val) / q_levels;
         auto start2 = std::chrono::high_resolution_clock::now();
-        for (int i = 0; i < N; i++) {
-            float val = (u(i) - min_val) / scale;
-            int q = static_cast<int>(std::round(val));
-            q = std::clamp(q, 0, q_levels);
-            vecU[i] = static_cast<uint8_t>(q);
-        }
+        const float scale = q_levels / (max_val - min_val);
+        q_vec = (((u.array() - min_val) * scale) + 0.5f)
+                    .cwiseMin(static_cast<float>(q_levels))
+                    .cwiseMax(0.0f)
+                    .cast<uint8_t>();
         quantElapsedTime += (std::chrono::high_resolution_clock::now() - start2);
+        std::memcpy(vecU.data(), q_vec.data(), N * sizeof(uint8_t));
     }
 
     void dequantize_vector(float min_val, float max_val) {
-        const float scale = (max_val - min_val) / q_levels;
-        auto start2 = std::chrono::high_resolution_clock::now();
-        for (int i = 0; i < N; i++) {
-            int acc = 0;
-            for (int j = 0; j < numHCores; j++){
-              acc = acc + out[i * numHCores + j];
-            }
-            u_temp(i) = acc * scale + min_val;
+        // Map raw 'out' data (uint8_t) into Eigen array of shape [N x numHCores]
+        Map<const Array<uint8_t, Dynamic, Dynamic, RowMajor>>
+            out_mat_temp(out.data(), N, numHCores);
+        for (int i = 0; i < numHCores; i++) {
+            out_mat_col[i] = out_mat_temp.col(i).cast<int>().matrix();
         }
+        auto start2 = std::chrono::high_resolution_clock::now();
+        for (int i = 1; i < numHCores; i++) {
+            out_mat_col[0] = out_mat_col[0] + out_mat_col[i];
+        }
+        syncElapsedTime += (std::chrono::high_resolution_clock::now() - start2);
+        start2 = std::chrono::high_resolution_clock::now();
+        const float scale = (max_val - min_val) / q_levels;
+        u_temp = (out_mat_col[0].array().cast<float>() * scale) + min_val;
         quantElapsedTime += (std::chrono::high_resolution_clock::now() - start2);
     }
 };
@@ -618,10 +633,10 @@ int main(int argc, char *argv[])
   solver.compareSWSolutions();
   solver.compareWithPhotonics();
 
-
   photonicsShowStats();
   solver.printHostElapsedTime();
   solver.printQuantElapsedTime();
+  solver.printSyncElapsedTime();
   solver.printCPUElapsedTime();
   solver.printGPUElapsedTime();
 
