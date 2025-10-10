@@ -10,9 +10,9 @@
 
 //! @brief  Create a PHOTONICS device
 PhotonicsStatus
-photonicsCreateDevice(PhotonicsDeviceEnum deviceType, unsigned numRanks, unsigned numBankPerRank, unsigned numSubarrayPerBank, unsigned numRows, unsigned numCols, unsigned bufferSize)
+photonicsCreateDevice(PhotonicsDeviceEnum deviceType, unsigned numRanks, unsigned numBankPerRank, unsigned numSubarrayPerBank, unsigned numRows, unsigned numCols, unsigned matrixSize, unsigned bufferSize)
 {
-  bool ok = photonicsSim::get()->createDevice(deviceType, numRanks, numBankPerRank, numSubarrayPerBank, numRows, numCols, bufferSize);
+  bool ok = photonicsSim::get()->createDevice(deviceType, numRanks, numBankPerRank, numSubarrayPerBank, numRows, numCols, bufferSize, matrixSize);
   return ok ? PHOTONICS_OK : PHOTONICS_ERROR;
 }
 

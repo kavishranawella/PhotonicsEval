@@ -100,7 +100,8 @@ struct PhotonicsDeviceProperties {
   unsigned numSubarrayPerBank = 0;
   unsigned numRowPerSubarray = 0;
   unsigned numColPerSubarray = 0;
-  unsigned numPHOTONICSCores = 0;
+  unsigned numPhotonicCores = 0;
+  unsigned matrixSize = 0;
   bool isHLayoutDevice = false;
 };
 
@@ -128,7 +129,7 @@ bool photonicsIsAnalysisMode();
  * @param bufferSize      Optional on-chip buffer size (B) for the device (default is 0). This parameter is only applicable for AiM.
  * @return PhotonicsStatus      Status code indicating success or failure of device creation.
  */
-PhotonicsStatus photonicsCreateDevice(PhotonicsDeviceEnum deviceType, unsigned numRanks, unsigned numBankPerRank, unsigned numSubarrayPerBank, unsigned numRows, unsigned numCols, unsigned bufferSize = 0);
+PhotonicsStatus photonicsCreateDevice(PhotonicsDeviceEnum deviceType, unsigned numRanks, unsigned numBankPerRank, unsigned numSubarrayPerBank, unsigned numRows, unsigned numCols, unsigned matrixSize, unsigned bufferSize = 0);
 PhotonicsStatus photonicsCreateDeviceFromConfig(PhotonicsDeviceEnum deviceType, const char* configFileName);
 PhotonicsStatus photonicsGetDeviceProperties(PhotonicsDeviceProperties* deviceProperties);
 PhotonicsStatus photonicsDeleteDevice();

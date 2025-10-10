@@ -112,6 +112,9 @@ photonicsDevice::init()
     m_numRows = numRows;
     m_numCols = numCols;
     m_bufferSize = bufferSize;
+    m_numPhotonicCores = numRanks * numBankPerRank;
+    m_numVectorsPerCore = numSubarrayPerBank;
+    m_numElementsPerVector = numCols/32;
   } else {
     return false;
   }
@@ -156,7 +159,7 @@ photonicsDevice::init()
     return m_isValid;
   }
 
-  std::printf("PHOTONICS-Info: Created PHOTONICS device with %u cores of %u rows and %u columns.\n", m_numCores, m_numRows, m_numCols);
+  std::printf("PHOTONICS-Info: Created PHOTONICS device with %u cores each fitting matrix of size %ux%u.\n", m_numPhotonicCores, m_numVectorsPerCore, m_numElementsPerVector);
 
   m_isInit = true;
   return m_isValid;

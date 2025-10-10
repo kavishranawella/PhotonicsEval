@@ -38,11 +38,15 @@ public:
   unsigned getNumRowPerSubarray() const { return m_config.getNumRowPerSubarray(); }
   unsigned getNumColPerSubarray() const { return m_config.getNumColPerSubarray(); }
   unsigned getOnChipBufferSize() const { return m_config.getBufferSize(); }
+  unsigned getMatrixSize() const { return m_config.getMatrixSize();  }
 
   unsigned getNumCores() const { return m_numCores; }
   unsigned getNumRows() const { return m_numRows; }
   unsigned getNumCols() const { return m_numCols; }
   unsigned getBufferSize() const { return m_bufferSize; }
+  unsigned getNumPhotonicCores() const { return m_numPhotonicCores; }
+  unsigned getNumVectorsPerCore() const { return m_numVectorsPerCore; }
+  unsigned getNumElementsPerVector() const { return m_numElementsPerVector; }
   bool isValid() const { return m_isValid; }
 
   bool isVLayoutDevice() const;
@@ -79,6 +83,9 @@ private:
   unsigned m_numRows = 0;
   unsigned m_numCols = 0;
   unsigned m_bufferSize = 0;
+  unsigned m_numPhotonicCores = 0;
+  unsigned m_numVectorsPerCore = 0;
+  unsigned m_numElementsPerVector = 0;
   bool m_isValid = false;
   bool m_isInit = false;
   std::unique_ptr<photonicsResMgr> m_resMgr;

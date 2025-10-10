@@ -26,7 +26,7 @@ public:
   static void destroy();
 
   // Device creation and deletion
-  bool createDevice(PhotonicsDeviceEnum deviceType, unsigned numRanks, unsigned numBankPerRank, unsigned numSubarrayPerBank, unsigned numRows, unsigned numCols, unsigned bufferSize);
+  bool createDevice(PhotonicsDeviceEnum deviceType, unsigned numRanks, unsigned numBankPerRank, unsigned numSubarrayPerBank, unsigned numRows, unsigned numCols, unsigned bufferSize, unsigned matrixSize);
   bool createDeviceFromConfig(PhotonicsDeviceEnum deviceType, const char* configFileName);
   bool getDeviceProperties(PhotonicsDeviceProperties* deviceProperties);
   bool deleteDevice();
@@ -41,11 +41,13 @@ public:
   unsigned getNumSubarrayPerBank() const { return m_config.getNumSubarrayPerBank(); }
   unsigned getNumRowPerSubarray() const { return m_config.getNumRowPerSubarray(); }
   unsigned getNumColPerSubarray() const { return m_config.getNumColPerSubarray(); }
+  unsigned getMatrixSize() const { return m_config.getMatrixSize(); }
   bool isAnalysisMode() const { return m_config.isAnalysisMode(); }
   unsigned getNumThreads() const { return m_config.getNumThreads(); }
   bool isDebug(photonicsSimConfig::photonicsDebugFlags flag) const { return m_config.getDebug() & flag; }
 
   unsigned getNumCores() const;
+  unsigned getNumPhotonicCores() const;
   unsigned getNumRows() const;
   unsigned getNumCols() const;
 

@@ -62,11 +62,11 @@ photonicsSim::uninit()
 
 //! @brief  Create a PHOTONICS device
 bool
-photonicsSim::createDevice(PhotonicsDeviceEnum deviceType, unsigned numRanks, unsigned numBankPerRank, unsigned numSubarrayPerBank, unsigned numRows, unsigned numCols, unsigned bufferSize)
+photonicsSim::createDevice(PhotonicsDeviceEnum deviceType, unsigned numRanks, unsigned numBankPerRank, unsigned numSubarrayPerBank, unsigned numRows, unsigned numCols, unsigned bufferSize, unsigned matrixSize)
 {
   photonicsPerfMon perfMon("createDevice");
   uninit();
-  bool success = m_config.init(deviceType, numRanks, numBankPerRank, numSubarrayPerBank, numRows, numCols, bufferSize);
+  bool success = m_config.init(deviceType, numRanks, numBankPerRank, numSubarrayPerBank, numRows, numCols, bufferSize, matrixSize);
   if (!success) {
     return false;
   }
@@ -140,7 +140,8 @@ photonicsSim::getDeviceProperties(PhotonicsDeviceProperties* deviceProperties) {
   deviceProperties->numRowPerSubarray = m_device->getNumRowPerSubarray();
   deviceProperties->numColPerSubarray = m_device->getNumColPerSubarray();
   deviceProperties->isHLayoutDevice = m_device->isHLayoutDevice();
-  deviceProperties->numPHOTONICSCores = m_device->getNumCores();
+  deviceProperties->numPhotonicCores = m_device->getNumPhotonicCores();
+  deviceProperties->matrixSize = m_device->getMatrixSize();
   return true;
 }
 
@@ -161,6 +162,16 @@ photonicsSim::getNumCores() const
 {
   if (m_device && m_device->isValid()) {
     return m_device->getNumCores();
+  }
+  return 0;
+}
+
+//! @brief  Get number of PHOTONICS cores
+unsigned
+photonicsSim::getNumPhotonicCores() const
+{
+  if (m_device && m_device->isValid()) {
+    return m_device->getNumPhotonicCores();
   }
   return 0;
 }

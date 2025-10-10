@@ -70,8 +70,8 @@ public:
   ~photonicsSimConfig() {}
 
   // Update PHOTONICSeval simulation configuration parameters at device creation
-  bool init(PhotonicsDeviceEnum deviceType, unsigned numRanks, unsigned numBankPerRank,
-      unsigned numSubarrayPerBank, unsigned numRowPerSubarray, unsigned numColPerSubarray, unsigned bufferSize);
+  bool init(PhotonicsDeviceEnum deviceType, unsigned numRanks, unsigned numBankPerRank, unsigned numSubarrayPerBank, 
+      unsigned numRowPerSubarray, unsigned numColPerSubarray, unsigned bufferSize, unsigned matrixSize);
   bool init(PhotonicsDeviceEnum deviceType, const std::string& configFilePath);
   void uninit() { reset(); }
   bool isInit() const { return m_isInit; }
@@ -90,6 +90,7 @@ public:
   unsigned getNumColPerSubarray() const { return m_numColPerSubarray; }
   unsigned getNumThreads() const { return m_numThreads; }
   unsigned getBufferSize() const { return m_bufferSize; }
+  unsigned getMatrixSize() const { return m_matrixSize; }
   bool isAnalysisMode() const { return m_analysisMode; }
   unsigned getDebug() const { return m_debug; }
   bool isLoadBalanced() const { return m_loadBalanced; }
@@ -111,7 +112,8 @@ private:
       unsigned numSubarrayPerBank = 0,
       unsigned numRowPerSubarray = 0,
       unsigned numColPerSubarray = 0,
-      unsigned bufferSize = 0);
+      unsigned bufferSize = 0,
+      unsigned matrixSize = 0);
 
   bool deriveDebug();
   std::unordered_map<std::string, std::string> readEnvVars() const;
@@ -121,7 +123,7 @@ private:
   bool deriveSimTarget();
   bool deriveMemConfigFile();
   bool deriveDimension(const std::string& envVar, const std::string& cfgVar, const unsigned apiVal, const unsigned defVal, unsigned& retVal);
-  bool deriveDimensions(unsigned numRanks, unsigned numBankPerRank, unsigned numSubarrayPerBank, unsigned numRowPerSubarray, unsigned numColPerSubarray, unsigned bufferSize);
+  bool deriveDimensions(unsigned numRanks, unsigned numBankPerRank, unsigned numSubarrayPerBank, unsigned numRowPerSubarray, unsigned numColPerSubarray, unsigned bufferSize, unsigned matrixSize);
   bool deriveNumThreads();
   bool deriveMiscEnvVars();
   bool deriveLoadBalance();
@@ -139,6 +141,7 @@ private:
   inline static const std::string m_cfgVarMaxNumThreads = "max_num_threads";
   inline static const std::string m_cfgVarLoadBalance = "should_load_balance";
   inline static const std::string m_cfgVarBufferSize = "buffer_size";
+  inline static const std::string m_cfgVarMatrixSize = "matrix_size";
 
   // Environment variables
   inline static const std::string m_envVarSimConfig = "PHOTONICSEVAL_SIM_CONFIG";
@@ -150,6 +153,7 @@ private:
   inline static const std::string m_envVarNumRowPerSubarray = "PHOTONICSEVAL_NUM_ROW_PER_SUBARRAY";
   inline static const std::string m_envVarNumColPerSubarray = "PHOTONICSEVAL_NUM_COL_PER_SUBARRAY";
   inline static const std::string m_envVarBufferSize = "PHOTONICSEVAL_BUFFER_SIZE";
+  inline static const std::string m_envVarMatrixSize = "PHOTONICSEVAL_MATRIX_SIZE";
   inline static const std::string m_envVarMaxNumThreads = "PHOTONICSEVAL_MAX_NUM_THREADS";
   inline static const std::string m_envVarAnalysisMode = "PHOTONICSEVAL_ANALYSIS_MODE";
   inline static const std::string m_envVarDebug = "PHOTONICSEVAL_DEBUG";
@@ -170,6 +174,7 @@ private:
     m_envVarDebug,
     m_envVarLoadBalance,
     m_envVarBufferSize,
+    m_envVarMatrixSize,
   };
 
   // Default values if not specified during init
@@ -179,6 +184,7 @@ private:
   static constexpr int DEFAULT_NUM_ROW_PER_SUBARRAY = 3;
   static constexpr int DEFAULT_NUM_COL_PER_SUBARRAY = 4096;
   static constexpr int DEFAULT_BUFFER_SIZE = 0;
+  static constexpr int DEFAULT_MATRIX_SIZE = 4096;
   static constexpr PhotonicsDeviceEnum DEFAULT_SIM_TARGET = PHOTONICS_DEVICE_FULCRUM;
 
   //! @brief  Reset all member variables to default status
@@ -195,6 +201,7 @@ private:
     m_numColPerSubarray = 0;
     m_numThreads = 0;
     m_bufferSize = 0;
+    m_matrixSize = 0;
     m_analysisMode = false;
     m_debug = 0;
     m_loadBalanced = false;
@@ -216,6 +223,7 @@ private:
   unsigned m_numColPerSubarray;
   unsigned m_numThreads;
   unsigned m_bufferSize;
+  unsigned m_matrixSize;
   bool m_analysisMode;
   unsigned m_debug;
   bool m_loadBalanced;

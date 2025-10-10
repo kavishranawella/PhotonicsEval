@@ -100,8 +100,9 @@ bool initPhotonicsAccel(const char *configFile)
     unsigned numSubarrayPerBank = 128;
     unsigned numRows = 3;
     unsigned numCols = 128*32;
+    unsigned matrixSize = 256;
 
-    PhotonicsStatus status = photonicsCreateDevice(PHOTONICS_FUNCTIONAL, numRanks, numBankPerRank, numSubarrayPerBank, numRows, numCols);
+    PhotonicsStatus status = photonicsCreateDevice(PHOTONICS_FUNCTIONAL, numRanks, numBankPerRank, numSubarrayPerBank, numRows, numCols, matrixSize);
     if (status != PHOTONICS_OK)
     {
       std::cout << "Abort" << std::endl;

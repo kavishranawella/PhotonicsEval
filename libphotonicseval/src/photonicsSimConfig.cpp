@@ -19,12 +19,12 @@
 bool
 photonicsSimConfig::init(PhotonicsDeviceEnum deviceType,
     unsigned numRanks, unsigned numBankPerRank, unsigned numSubarrayPerBank,
-    unsigned numRowPerSubarray, unsigned numColPerSubarray, unsigned bufferSize)
+    unsigned numRowPerSubarray, unsigned numColPerSubarray, unsigned bufferSize, unsigned matrixSize)
 {
   reset();  // always reset before init
   return deriveConfig(deviceType, "",
                       numRanks, numBankPerRank, numSubarrayPerBank,
-                      numRowPerSubarray, numColPerSubarray, bufferSize);
+                      numRowPerSubarray, numColPerSubarray, bufferSize, matrixSize);
 }
 
 //! @brief  Init PHOTONICSeval simulation configuration parameters at device creation
@@ -51,8 +51,8 @@ photonicsSimConfig::show() const
             photonicsUtils::photonicsDeviceEnumToStr(m_deviceType).c_str(),
             photonicsUtils::photonicsDeviceEnumToStr(m_simTarget).c_str());
 
-  std::printf("PHOTONICS-Config: #ranks = %u, #banksPerRank = %u, #subarraysPerBank = %u, #rowsPerSubarray = %u, #colsPerSubarray = %u",
-            m_numRanks, m_numBankPerRank, m_numSubarrayPerBank, m_numRowPerSubarray, m_numColPerSubarray);
+  std::printf("PHOTONICS-Config: #VCores = %u, #HCores = %u, #VectorsPerCore = %u, #ElementsPerVector = %u",
+            m_numRanks, m_numBankPerRank, m_numSubarrayPerBank, m_numColPerSubarray/32);
   if (m_bufferSize > 0) std::printf(", bufferSize = %uB", m_bufferSize);
   std::printf("\n");
 
@@ -67,7 +67,7 @@ photonicsSimConfig::deriveConfig(PhotonicsDeviceEnum deviceType,
     const std::string& configFilePath,
     unsigned numRanks, unsigned numBankPerRank, unsigned numSubarrayPerBank,
     unsigned numRowPerSubarray, unsigned numColPerSubarray,
-    unsigned bufferSize)
+    unsigned bufferSize, unsigned matrixSize)
 {
   bool ok = true;
 
@@ -87,7 +87,7 @@ photonicsSimConfig::deriveConfig(PhotonicsDeviceEnum deviceType,
   ok = ok & deriveDeviceType(deviceType);
   ok = ok & deriveSimTarget();
   ok = ok & deriveMemConfigFile();
-  ok = ok & deriveDimensions(numRanks, numBankPerRank, numSubarrayPerBank, numRowPerSubarray, numColPerSubarray, bufferSize);
+  ok = ok & deriveDimensions(numRanks, numBankPerRank, numSubarrayPerBank, numRowPerSubarray, numColPerSubarray, bufferSize, matrixSize);
   ok = ok & deriveNumThreads();
   ok = ok & deriveMiscEnvVars();
   ok = ok & deriveLoadBalance();
@@ -322,7 +322,7 @@ photonicsSimConfig::deriveDimension(const std::string& cfgVar, const std::string
 
 //! @brief  Derive Params: PHOTONICS Memory Dimensions
 bool
-photonicsSimConfig::deriveDimensions(unsigned numRanks, unsigned numBankPerRank, unsigned numSubarrayPerBank, unsigned numRowPerSubarray, unsigned numColPerSubarray, unsigned bufferSize)
+photonicsSimConfig::deriveDimensions(unsigned numRanks, unsigned numBankPerRank, unsigned numSubarrayPerBank, unsigned numRowPerSubarray, unsigned numColPerSubarray, unsigned bufferSize, unsigned matrixSize)
 {
   bool ok = true;
   ok = ok & deriveDimension(m_cfgVarNumRanks, m_envVarNumRanks, numRanks, DEFAULT_NUM_RANKS, m_numRanks);
@@ -331,6 +331,7 @@ photonicsSimConfig::deriveDimensions(unsigned numRanks, unsigned numBankPerRank,
   ok = ok & deriveDimension(m_cfgVarNumRowPerSubarray, m_envVarNumRowPerSubarray, numRowPerSubarray, DEFAULT_NUM_ROW_PER_SUBARRAY, m_numRowPerSubarray);
   ok = ok & deriveDimension(m_cfgVarNumColPerSubarray, m_envVarNumColPerSubarray, numColPerSubarray, DEFAULT_NUM_COL_PER_SUBARRAY, m_numColPerSubarray);
   ok = ok & deriveDimension(m_cfgVarBufferSize, m_envVarBufferSize, bufferSize, DEFAULT_BUFFER_SIZE, m_bufferSize);
+  ok = ok & deriveDimension(m_cfgVarMatrixSize, m_envVarMatrixSize, matrixSize, DEFAULT_MATRIX_SIZE, m_matrixSize);
   if (m_numRanks == 0 || m_numBankPerRank == 0 || m_numSubarrayPerBank == 0 || m_numRowPerSubarray == 0 || m_numColPerSubarray == 0) {
     std::printf("PHOTONICS-Error: Memory dimension parameter cannot be 0\n");
     ok = false;

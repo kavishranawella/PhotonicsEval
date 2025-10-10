@@ -73,27 +73,20 @@ void
 photonicsStatsMgr::showDeviceParams() const
 {
   const photonicsParamsDram& paramsDram = photonicsSim::get()->getParamsDram();
-  std::printf("PHOTONICS Params:\n");
-  std::printf(" %30s : %s\n", "PHOTONICS Device Type Enum",
+  std::printf("Photonics Params:\n");
+  std::printf(" %30s : %s\n", "Photonics Device Type Enum",
               photonicsUtils::photonicsDeviceEnumToStr(photonicsSim::get()->getDeviceType()).c_str());
-  std::printf(" %30s : %s\n", "PHOTONICS Simulation Target",
+  std::printf(" %30s : %s\n", "Photonics Simulation Target",
               photonicsUtils::photonicsDeviceEnumToStr(photonicsSim::get()->getSimTarget()).c_str());
-  std::printf(" %30s : %u, %u, %u, %u, %u\n", "Rank, Bank, Subarray, Row, Col",
+  std::printf(" %30s : %u, %u, %u, %u\n", "VCores, HCores, VectorsPerCore, ElementsPerVector",
               photonicsSim::get()->getNumRanks(),
               photonicsSim::get()->getNumBankPerRank(),
               photonicsSim::get()->getNumSubarrayPerBank(),
-              photonicsSim::get()->getNumRowPerSubarray(),
-              photonicsSim::get()->getNumColPerSubarray());
-  std::printf(" %30s : %u\n", "Number of PHOTONICS Cores", photonicsSim::get()->getNumCores());
-  std::printf(" %30s : %u\n", "Number of Rows per Core", photonicsSim::get()->getNumRows());
-  std::printf(" %30s : %u\n", "Number of Cols per Core", photonicsSim::get()->getNumCols());
+              photonicsSim::get()->getNumColPerSubarray()/32);
+  std::printf(" %30s : %u\n", "Number of Photonics Cores", photonicsSim::get()->getNumPhotonicCores());
+  std::printf(" %30s : %u\n", "Number of Rows per Core", photonicsSim::get()->getNumSubarrayPerBank());
+  std::printf(" %30s : %u\n", "Number of Cols per Core", photonicsSim::get()->getNumCols()/32);
   std::printf(" %30s : %f GB/s\n", "Typical Rank BW", paramsDram.getTypicalRankBW());
-  std::printf(" %30s : %f\n", "Row Read (ns)", paramsDram.getNsRowRead());
-  std::printf(" %30s : %f\n", "Row Write (ns)", paramsDram.getNsRowWrite());
-  std::printf(" %30s : %f\n", "tCCD (ns)", paramsDram.getNsTCCD_S());
-  if (photonicsSim::get()->isDebug(photonicsSimConfig::DEBUG_PERF)) {
-    std::printf(" %30s : %f\n", "AAP (ns)", paramsDram.getNsAAP());
-  }
 }
 
 //! @brief  Show data copy stats

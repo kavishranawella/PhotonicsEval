@@ -456,7 +456,7 @@ private:
     int n_steps;    // number of steps
     float h;       // grid spacing
     int d = -4;     // diagonal value
-    const float tolerance = 1e-5f;
+    const float tolerance = 1e-10f;
     float alpha, beta, gamma;
     int num_bits = 8;
     float q_levels = (1 << num_bits) - 1;
@@ -513,7 +513,15 @@ private:
       numVectorsPerCore = deviceParams.numSubarrayPerBank;
       numElementsPerVector = deviceParams.numColPerSubarray / 32;
 
-      N = numHCores * numElementsPerVector;
+      N = deviceParams.matrixSize;
+
+      if ((N != (numVCores * numVectorsPerCore)) || (N != (numHCores * numElementsPerVector)) )
+      {
+        cerr << "❌ Error: Entire matrix needs to fit into the Photonic Cores since tiling is unavailable! \n"
+                << "N = " << N << ", (numVCores * numVectorsPerCore) = " << (numVCores * numVectorsPerCore)
+                << ", (numHCores * numElementsPerVector) = " << (numHCores * numElementsPerVector) << endl;
+        return PHOTONICS_ERROR;
+      }
 
       matAObject = photonicsAllocMat(N*N, PHOTONICS_FP32);
       if (matAObject == -1)
