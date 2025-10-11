@@ -51,8 +51,8 @@ photonicsSimConfig::show() const
             photonicsUtils::photonicsDeviceEnumToStr(m_deviceType).c_str(),
             photonicsUtils::photonicsDeviceEnumToStr(m_simTarget).c_str());
 
-  std::printf("PHOTONICS-Config: #VCores = %u, #HCores = %u, #VectorsPerCore = %u, #ElementsPerVector = %u",
-            m_numRanks, m_numBankPerRank, m_numSubarrayPerBank, m_numColPerSubarray/32);
+  std::printf("PHOTONICS-Config: #VCores = %u, #HCores = %u, #VectorsPerCore = %u, #ElementsPerVector = %u, matrixSize = %u",
+            m_numRanks, m_numBankPerRank, m_numSubarrayPerBank, m_numColPerSubarray/32, m_matrixSize);
   if (m_bufferSize > 0) std::printf(", bufferSize = %uB", m_bufferSize);
   std::printf("\n");
 

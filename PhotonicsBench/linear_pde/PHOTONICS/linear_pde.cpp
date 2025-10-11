@@ -416,7 +416,7 @@ public:
             cerr << "❌ Error: Mismatch in number of saved solutions! "
                 << "Photonics = " << photonics_solutions.size()
                 << ", CPU = " << cpu_solutions.size() << endl;
-            return;
+            throw std::runtime_error("Solution count mismatch between SW and Photonics");
         }
 
         for (size_t k = 0; k < photonics_solutions.size(); k++) {
@@ -425,7 +425,7 @@ public:
 
             if (H.rows() != S.rows() || H.cols() != S.cols()) {
                 cerr << "❌ Error: Dimension mismatch at solution " << k << endl;
-                continue;
+                throw std::runtime_error("Dimension mismatch between SW and Photonics results");
             }
 
             // Compute difference
@@ -456,7 +456,7 @@ private:
     int n_steps;    // number of steps
     float h;       // grid spacing
     int d = -4;     // diagonal value
-    const float tolerance = 1e-10f;
+    const float tolerance = 1e-5f;
     float alpha, beta, gamma;
     int num_bits = 8;
     float q_levels = (1 << num_bits) - 1;

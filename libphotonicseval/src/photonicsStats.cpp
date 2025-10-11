@@ -86,7 +86,8 @@ photonicsStatsMgr::showDeviceParams() const
   std::printf(" %30s : %u\n", "Number of Photonics Cores", photonicsSim::get()->getNumPhotonicCores());
   std::printf(" %30s : %u\n", "Number of Rows per Core", photonicsSim::get()->getNumSubarrayPerBank());
   std::printf(" %30s : %u\n", "Number of Cols per Core", photonicsSim::get()->getNumCols()/32);
-  std::printf(" %30s : %f GB/s\n", "Typical Rank BW", paramsDram.getTypicalRankBW());
+  std::printf(" %30s : %u\n", "Matrix Size", photonicsSim::get()->getMatrixSize());
+  std::printf(" %30s : %f GB/s\n", "Memory BW", paramsDram.getTypicalRankBW());
 }
 
 //! @brief  Show data copy stats

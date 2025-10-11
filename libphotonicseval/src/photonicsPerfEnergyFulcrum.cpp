@@ -323,7 +323,7 @@ photonicsPerfEnergyFulcrum::getPerfEnergyForMvm(const photonicsObjInfo& obj, con
 
   msRead = 0;
   msWrite = 0;
-  msALU = 0.00005;
+  msALU = 0.00000005;
   msRuntime = msRead + msWrite + msALU;
   mjEnergy = numCoresUsed * powerPerCore * msRuntime / 1000;
   // mjEnergy += numCoresUsed * ; // TODO: Use this to add energy due to multiple core interactions
