@@ -21,7 +21,7 @@ USE_CUDA ?= 1        # <-- Enable GPU support (set to 0 to disable)
 ifeq ($(USE_CUDA),1)
 	CUDA_PATH ?= /usr/local/cuda-12.4
 	CXXFLAGS  += -DUSE_GPU_SOLVER=1 -I$(CUDA_PATH)/include
-	LDFLAGS   += -L$(CUDA_PATH)/lib64 -lcublas -lcudart
+	LDFLAGS   += -L$(CUDA_PATH)/lib64 -lcublas -lcudart -lnpps -lnppc
 else
 	CXXFLAGS  += -DUSE_GPU_SOLVER=0
 endif

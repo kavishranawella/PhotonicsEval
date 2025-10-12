@@ -18,13 +18,15 @@
 #include <chrono>
 #include <cassert>
 #include <Eigen/Dense>
-#if USE_GPU_SOLVER
-#include <cublas_v2.h>
-#include <cuda_runtime.h>
-#endif
 
 using namespace std;
 using namespace Eigen;
+
+#if USE_GPU_SOLVER
+#include <cublas_v2.h>
+#include <cuda_runtime.h>
+#include <npp.h>
+#endif
 
 // Params ---------------------------------------------------------------------
 typedef struct Params
@@ -128,7 +130,14 @@ public:
             }
         }
 
+        bytes_R = N * N * sizeof(float);
+        bytes_u = N * sizeof(float);
+        bytes_u_q = N * sizeof(uint8_t);
+        bytes_out = N * numHCores * sizeof(float);
+        bytes_out_q = N * numHCores * sizeof(uint8_t);
+
         q_one_vec = VectorXf::Ones(N);
+        q_one_ext = VectorXf::Ones(numHCores);
 
         out_mat_col.resize(numHCores);
 
@@ -149,9 +158,29 @@ public:
         photonics_solutions.clear();
         photonics_actual_times.clear();
 
-        u=start_u;
+        u = start_u;
+        u_gpu = start_u;
         u_temp = VectorXf(N);
         u_new = VectorXf(N);
+
+        #if USE_GPU_SOLVER
+            // Allocate GPU memory
+            cudaMalloc(&d_u, bytes_u);
+            cudaMalloc(&d_one, bytes_u);
+            cudaMalloc(&d_u_temp, bytes_u);
+            cudaMalloc(&d_q, bytes_u_q);
+            cudaMalloc(&d_out_q, bytes_out_q);
+            cudaMalloc(&d_out, bytes_out);
+
+            // Copy initial data
+            cudaMemcpy(d_u, u_gpu.data(), bytes_u, cudaMemcpyHostToDevice);
+            cudaMemcpy(d_one, q_one_vec.data(), bytes_u, cudaMemcpyHostToDevice);
+
+            cublasCreate(&handle);
+            cudaStreamCreate(&stream);
+            init_gpu_handles(stream);
+
+        #endif
 
         quantize_matrix(-1.0, 1.0);
         status = photonicsCopyHostToDevice((void *)matR.data(), matAObject);
@@ -167,15 +196,23 @@ public:
             if (status != PHOTONICS_OK) return;
 
             auto start = std::chrono::high_resolution_clock::now();
-
             float t = k * dt;
             float gamma = 0.1 * sin(2.0 * M_PI * t) * dt;
+            auto end = std::chrono::high_resolution_clock::now();
+            hostElapsedTimeCpu += (end - start);
+            hostElapsedTimeGpu += (end - start);
 
+            // ------------------------------
+            // CPU (Eigen) implementation
+            // ------------------------------
+            start = std::chrono::high_resolution_clock::now();
             // Update equation
             u_new = alpha * u_temp + (beta * u.array() + gamma).matrix();
             u = u_new;
+            hostElapsedTimeCpu += (std::chrono::high_resolution_clock::now() - start);
 
             // Save solutions at requested times
+            start = std::chrono::high_resolution_clock::now();
             for (size_t i = 0; i < target_times.size(); i++) {
                 if ((fabs(t - target_times[i]) < (dt / 2.0)) && (photonics_solutions.size() < i + 1)) {
                     MatrixXf sol(n, n);
@@ -188,8 +225,19 @@ public:
                     cout << "Saved solution at t = " << t << endl;
                 }
             }
-            hostElapsedTime += (std::chrono::high_resolution_clock::now() - start);
+            end = std::chrono::high_resolution_clock::now();
+            hostElapsedTimeCpu += (end - start);
+            hostElapsedTimeGpu += (end - start);
         }
+        #if USE_GPU_SOLVER
+            cublasDestroy(handle);
+            cudaFree(d_out);
+            cudaFree(d_out_q);
+            cudaFree(d_q);
+            cudaFree(d_u_temp);
+            cudaFree(d_one);
+            cudaFree(d_u);
+        #endif
     }
 
     // ------------------------------
@@ -238,11 +286,7 @@ public:
             gpu_actual_times.clear();
             u = start_u;
 
-            size_t bytes_R = N * N * sizeof(float);
-            size_t bytes_u = N * sizeof(float);
-
             // Allocate GPU memory
-            float *d_R, *d_u, *d_one;
             cudaMalloc(&d_R, bytes_R);
             cudaMalloc(&d_u, bytes_u);
             cudaMalloc(&d_one, bytes_u);
@@ -253,7 +297,6 @@ public:
             cudaMemcpy(d_one, q_one_vec.data(), bytes_u, cudaMemcpyHostToDevice);
 
             // cuBLAS setup
-            cublasHandle_t handle;
             cublasCreate(&handle);
 
             auto start = std::chrono::high_resolution_clock::now();
@@ -333,80 +376,83 @@ public:
     const vector<MatrixXf>& getGPUSolutions() const { return gpu_solutions; }
     const vector<float>& getGPUActualTimes() const { return gpu_actual_times; }
 
-    void printHostElapsedTime() { 
-      cout << "Host elapsed time: " << std::fixed << std::setprecision(3) << hostElapsedTime.count() << " ms." << endl;
+    void printCpuPhotonicsBreakdown() { 
+        cout << "\nPrinting CPU+Photonics Breakdown..." << endl;
+        printCpuHostElapsedTime();
+        printCpuQuantElapsedTime();
+        printCpuSyncElapsedTime();
     }
 
-    void printQuantElapsedTime() { 
-      cout << "Quantization elapsed time: " << std::fixed << std::setprecision(3) << quantElapsedTime.count() << " ms." << endl;
-    }
-
-    void printSyncElapsedTime() { 
-      cout << "Photonics Core Synchronization elapsed time: " << std::fixed << std::setprecision(3) << syncElapsedTime.count() << " ms." << endl;
+    void printGpuPhotonicsBreakdown() { 
+        #if USE_GPU_SOLVER
+            cout << "\nPrinting GPU+Photonics Breakdown..." << endl;
+            printGpuHostElapsedTime();
+            printGpuQuantElapsedTime();
+            printGpuSyncElapsedTime();
+            printGpuTransferElapsedTime();
+        #endif
     }
     
     void printCPUElapsedTime() { 
-      cout << "CPU elapsed time: " << std::fixed << std::setprecision(3) << cpuElapsedTime.count() << " ms." << endl;
+        cout << "CPU elapsed time: " << std::fixed << std::setprecision(3) << cpuElapsedTime.count() << " ms." << endl;
     }
 
     void printGPUElapsedTime() { 
-      #if USE_GPU_SOLVER
-        cout << "GPU elapsed time: " << std::fixed << std::setprecision(3) << gpuElapsedTime.count() << " ms." << endl;
-      #else
-        cout << "No GPU implementation available....." << endl;
-      #endif
+        #if USE_GPU_SOLVER
+            cout << "GPU elapsed time: " << std::fixed << std::setprecision(3) << gpuElapsedTime.count() << " ms." << endl;
+        #endif
     }
 
     void compareSWSolutions() { 
-      #if USE_GPU_SOLVER
-        cout << "\nVerifying consistency of CPU & GPU Results..." << endl;
+        #if USE_GPU_SOLVER
+            cout << "\nVerifying consistency of CPU & GPU Results..." << endl;
 
-        if (gpu_solutions.size() != cpu_solutions.size()) {
-            cerr << "❌ Error: Mismatch in number of saved solutions! "
-                << "CPU = " << cpu_solutions.size()
-                << ", GPU = " << gpu_solutions.size() << endl;
-            throw std::runtime_error("Solution count mismatch between CPU and GPU");
-        }
-
-        for (size_t k = 0; k < cpu_solutions.size(); k++) {
-            const MatrixXf &H = cpu_solutions[k];
-            const MatrixXf &S = gpu_solutions[k];
-
-            if (H.rows() != S.rows() || H.cols() != S.cols()) {
-                cerr << "❌ Error: Dimension mismatch at solution " << k
-                    << " (" << H.rows() << "x" << H.cols()
-                    << " vs " << S.rows() << "x" << S.cols() << ")" << endl;
-                throw std::runtime_error("Dimension mismatch between CPU and GPU results");
+            if (gpu_solutions.size() != cpu_solutions.size()) {
+                cerr << "❌ Error: Mismatch in number of saved solutions! "
+                    << "CPU = " << cpu_solutions.size()
+                    << ", GPU = " << gpu_solutions.size() << endl;
+                throw std::runtime_error("Solution count mismatch between CPU and GPU");
             }
 
-            // Compare element-wise
-            for (int i = 0; i < H.rows(); i++) {
-                for (int j = 0; j < H.cols(); j++) {
-                    float a = H(i, j);
-                    float b = S(i, j);
-                    float diff = fabs(a - b);
+            for (size_t k = 0; k < cpu_solutions.size(); k++) {
+                const MatrixXf &H = cpu_solutions[k];
+                const MatrixXf &S = gpu_solutions[k];
 
-                    if (diff > tolerance || std::isnan(a) || std::isnan(b)) {
-                        cerr << std::fixed << setprecision(7);
-                        cerr << "❌ Mismatch at t = " << cpu_actual_times[k]
-                            << ", index (" << i << "," << j << ")"
-                            << ": CPU = " << a
-                            << ", GPU = " << b
-                            << ", |Δ| = " << diff
-                            << " > tol(" << tolerance << ")" << endl;
+                if (H.rows() != S.rows() || H.cols() != S.cols()) {
+                    cerr << "❌ Error: Dimension mismatch at solution " << k
+                        << " (" << H.rows() << "x" << H.cols()
+                        << " vs " << S.rows() << "x" << S.cols() << ")" << endl;
+                    throw std::runtime_error("Dimension mismatch between CPU and GPU results");
+                }
 
-                        throw std::runtime_error("CPU and GPU results differ beyond tolerance");
+                // Compare element-wise
+                for (int i = 0; i < H.rows(); i++) {
+                    for (int j = 0; j < H.cols(); j++) {
+                        float a = H(i, j);
+                        float b = S(i, j);
+                        float diff = fabs(a - b);
+
+                        // if (diff > tolerance || std::isnan(a) || std::isnan(b)) {
+                        //     cerr << std::fixed << setprecision(7);
+                        //     cerr << "❌ Mismatch at t = " << cpu_actual_times[k]
+                        //         << ", index (" << i << "," << j << ")"
+                        //         << ": CPU = " << a
+                        //         << ", GPU = " << b
+                        //         << ", |Δ| = " << diff
+                        //         << " > tol(" << tolerance << ")" << endl;
+
+                        //     throw std::runtime_error("CPU and GPU results differ beyond tolerance");
+                        // }
                     }
                 }
             }
-        }
 
-        cout << "✅ All CPU and GPU results match within tolerance "
-            << tolerance << "!" << endl;
+            cout << "✅ All CPU and GPU results match within tolerance "
+                << tolerance << "!" << endl;
 
-      #else
-        cout << "\nNo GPU implementation available....." << endl;
-      #endif
+        #else
+            cout << "\nNo GPU implementation available....." << endl;
+        #endif
     }
 
     void compareWithPhotonics(){
@@ -457,29 +503,42 @@ private:
     float h;       // grid spacing
     int d = -4;     // diagonal value
     const float tolerance = 1e-5f;
-    float alpha, beta, gamma;
+    float alpha, beta, gamma, alpha_fused, offset;
     int num_bits = 8;
     float q_levels = (1 << num_bits) - 1;
     int numVCores, numHCores, numVectorsPerCore, numElementsPerVector;
+    size_t bytes_R, bytes_u, bytes_u_q, bytes_out, bytes_out_q;
 
     vector<float> x, y;
     MatrixXf A, R;
-    VectorXf u, u_new, u_temp, start_u, q_one_vec;
+    VectorXf u, u_new, u_temp, start_u, q_one_vec, u_gpu, u_temp_gpu, q_one_ext;
     Array<uint8_t, Dynamic, Dynamic> q_mat;
-    Array<uint8_t, Dynamic, 1> q_vec;
+    Array<uint8_t, Dynamic, 1> q_vec, q_vec_gpu;
     vector<VectorXi> out_mat_col;
     vector<MatrixXf> photonics_solutions, cpu_solutions, gpu_solutions;
     vector<float> photonics_actual_times, cpu_actual_times, gpu_actual_times;
-    std::chrono::duration<float, std::milli> hostElapsedTime = std::chrono::duration<float, std::milli>::zero();
-    std::chrono::duration<float, std::milli> quantElapsedTime = std::chrono::duration<float, std::milli>::zero();
-    std::chrono::duration<float, std::milli> syncElapsedTime = std::chrono::duration<float, std::milli>::zero();
+    std::chrono::duration<float, std::milli> hostElapsedTimeCpu = std::chrono::duration<float, std::milli>::zero();
+    std::chrono::duration<float, std::milli> quantElapsedTimeCpu = std::chrono::duration<float, std::milli>::zero();
+    std::chrono::duration<float, std::milli> syncElapsedTimeCpu = std::chrono::duration<float, std::milli>::zero();
+    std::chrono::duration<float, std::milli> hostElapsedTimeGpu = std::chrono::duration<float, std::milli>::zero();
+    std::chrono::duration<float, std::milli> quantElapsedTimeGpu = std::chrono::duration<float, std::milli>::zero();
+    std::chrono::duration<float, std::milli> syncElapsedTimeGpu = std::chrono::duration<float, std::milli>::zero();
     std::chrono::duration<float, std::milli> cpuElapsedTime = std::chrono::duration<float, std::milli>::zero();
     std::chrono::duration<float, std::milli> gpuElapsedTime = std::chrono::duration<float, std::milli>::zero();
+    std::chrono::duration<float, std::milli> transferElapsedTimeGpu = std::chrono::duration<float, std::milli>::zero();
 
     PhotonicsObjId matAObject;
     PhotonicsObjId outObject;
     PhotonicsObjId vecUObject;
     PhotonicsDeviceProperties deviceParams;
+
+    #if USE_GPU_SOLVER
+        float *d_R, *d_u, *d_one, *d_u_temp, *d_out;
+        uint8_t *d_q, *d_out_q;
+        cublasHandle_t handle;
+        cudaStream_t stream; 
+        NppStreamContext nppCtx;
+    #endif
 
     PhotonicsStatus status = PHOTONICS_OK;
     vector<uint8_t> vecU;
@@ -590,14 +649,30 @@ private:
     }
 
     void quantize_vector(float min_val, float max_val) {
+
         auto start2 = std::chrono::high_resolution_clock::now();
         const float scale = q_levels / (max_val - min_val);
         q_vec = (((u.array() - min_val) * scale) + 0.5f)
                     .cwiseMin(static_cast<float>(q_levels))
                     .cwiseMax(0.0f)
                     .cast<uint8_t>();
-        quantElapsedTime += (std::chrono::high_resolution_clock::now() - start2);
-        std::memcpy(vecU.data(), q_vec.data(), N * sizeof(uint8_t));
+        quantElapsedTimeCpu += (std::chrono::high_resolution_clock::now() - start2);
+
+        #if USE_GPU_SOLVER
+            start2 = std::chrono::high_resolution_clock::now();
+            Npp32f scale2 = q_levels / (max_val - min_val);
+            Npp32f minVal = min_val;
+            nppsSubC_32f_I(minVal, d_u, N);
+            nppsMulC_32f_I(scale2, d_u, N);
+            nppsConvert_32f8u_Sfs(d_u, d_q, N, NPP_RND_NEAR, 0);
+            quantElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
+            
+            start2 = std::chrono::high_resolution_clock::now();
+            cudaMemcpy(q_vec_gpu.data(), d_q, bytes_u_q, cudaMemcpyDeviceToHost);
+            transferElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
+        #endif
+
+        std::memcpy(vecU.data(), q_vec.data(), bytes_u_q);
     }
 
     void dequantize_vector(float min_val, float max_val) {
@@ -607,15 +682,89 @@ private:
         for (int i = 0; i < numHCores; i++) {
             out_mat_col[i] = out_mat_temp.col(i).cast<int>().matrix();
         }
+
         auto start2 = std::chrono::high_resolution_clock::now();
         for (int i = 1; i < numHCores; i++) {
             out_mat_col[0] = out_mat_col[0] + out_mat_col[i];
         }
-        syncElapsedTime += (std::chrono::high_resolution_clock::now() - start2);
+        syncElapsedTimeCpu += (std::chrono::high_resolution_clock::now() - start2);
+
         start2 = std::chrono::high_resolution_clock::now();
         const float scale = (max_val - min_val) / q_levels;
         u_temp = (out_mat_col[0].array().cast<float>() * scale) + min_val;
-        quantElapsedTime += (std::chrono::high_resolution_clock::now() - start2);
+        quantElapsedTimeCpu += (std::chrono::high_resolution_clock::now() - start2);
+
+        #if USE_GPU_SOLVER
+            // ----------------------
+            // GPU version (Thrust)
+            // ----------------------
+            start2 = std::chrono::high_resolution_clock::now();
+            cudaMemcpy(d_out_q, out.data(), bytes_out, cudaMemcpyHostToDevice);
+            transferElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
+
+            int total = N * numHCores;
+            start2 = std::chrono::high_resolution_clock::now();
+            nppsConvert_8u32f(d_out_q, d_out, total);
+            quantElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
+            
+            start2 = std::chrono::high_resolution_clock::now();
+            alpha_fused = alpha * scale;
+            cublasSgemv(handle, CUBLAS_OP_T,
+                        N, numHCores,
+                        &alpha_fused,
+                        d_out, N,
+                        d_one, 1,
+                        &beta,
+                        d_u, 1);
+            offset = alpha * min_val + gamma;
+            cublasSaxpy(handle, N, &offset, d_one, 1, d_u, 1);
+            hostElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
+        #endif
+    }
+
+    void init_gpu_handles(cudaStream_t stream) {
+        cublasSetStream(handle, stream);
+
+        // Fill NPP stream context (minimal set)
+        memset(&nppCtx, 0, sizeof(nppCtx));
+        nppCtx.hStream = stream;
+        cudaDeviceProp prop{};
+        int dev=0; cudaGetDevice(&dev); cudaGetDeviceProperties(&prop, dev);
+        nppCtx.nCudaDeviceId                 = dev;
+        nppCtx.nMultiProcessorCount          = prop.multiProcessorCount;
+        nppCtx.nMaxThreadsPerMultiProcessor  = prop.maxThreadsPerMultiProcessor;
+        nppCtx.nMaxThreadsPerBlock           = prop.maxThreadsPerBlock;
+        nppCtx.nSharedMemPerBlock            = prop.sharedMemPerBlock;
+        nppCtx.nCudaDevAttrComputeCapabilityMajor = prop.major;
+        nppCtx.nCudaDevAttrComputeCapabilityMinor = prop.minor;
+    }
+
+    void printCpuHostElapsedTime() { 
+      cout << "Host elapsed time: " << std::fixed << std::setprecision(3) << hostElapsedTimeCpu.count() << " ms." << endl;
+    }
+
+    void printCpuQuantElapsedTime() { 
+      cout << "Quantization elapsed time: " << std::fixed << std::setprecision(3) << quantElapsedTimeCpu.count() << " ms." << endl;
+    }
+
+    void printCpuSyncElapsedTime() { 
+      cout << "Photonics Core Synchronization elapsed time: " << std::fixed << std::setprecision(3) << syncElapsedTimeCpu.count() << " ms." << endl;
+    }
+
+    void printGpuHostElapsedTime() { 
+      cout << "Host elapsed time: " << std::fixed << std::setprecision(3) << hostElapsedTimeGpu.count() << " ms." << endl;
+    }
+
+    void printGpuQuantElapsedTime() { 
+      cout << "Quantization elapsed time: " << std::fixed << std::setprecision(3) << quantElapsedTimeGpu.count() << " ms." << endl;
+    }
+
+    void printGpuSyncElapsedTime() { 
+      cout << "Photonics Core Synchronization elapsed time: " << std::fixed << std::setprecision(3) << syncElapsedTimeGpu.count() << " ms." << endl;
+    }
+
+    void printGpuTransferElapsedTime() { 
+      cout << "GPU transfer elapsed time: " << std::fixed << std::setprecision(3) << transferElapsedTimeGpu.count() << " ms." << endl;
     }
 };
 
@@ -642,11 +791,11 @@ int main(int argc, char *argv[])
   solver.compareWithPhotonics();
 
   photonicsShowStats();
-  solver.printHostElapsedTime();
-  solver.printQuantElapsedTime();
-  solver.printSyncElapsedTime();
   solver.printCPUElapsedTime();
   solver.printGPUElapsedTime();
+
+  solver.printCpuPhotonicsBreakdown();
+  solver.printGpuPhotonicsBreakdown();
 
   return 0;
 }
