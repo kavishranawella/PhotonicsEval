@@ -8,7 +8,9 @@
 #include <vector>
 #include <cmath>
 #include <algorithm>
+#include <cstdlib>
 #include <numeric>
+#include <ctime>
 #include <getopt.h>
 #if defined(_OPENMP)
 #include <omp.h>
@@ -17,10 +19,27 @@
 #include <iomanip>
 #include <chrono>
 #include <cassert>
-#include <Eigen/Dense>
+#include <Eigen/Dense>#
+
+#define VIENNACL_WITH_OPENCL
+#include <boost/numeric/ublas/matrix.hpp>
+#include <viennacl/matrix.hpp>
+#include <viennacl/linalg/lu.hpp>
+#include <viennacl/ocl/backend.hpp>
+#include <viennacl/matrix_proxy.hpp>
+#include <viennacl/linalg/prod.hpp>
+using namespace viennacl::ocl;
+using namespace viennacl::linalg;
+using boost::numeric::ublas::matrix;
 
 using namespace std;
 using namespace Eigen;
+
+#if USE_GPU_SOLVER
+#include <cublas_v2.h>
+#include <cuda_runtime.h>
+#include <npp.h>
+#endif
 
 // Params ---------------------------------------------------------------------
 typedef struct Params
@@ -79,264 +98,355 @@ struct Params getInputParams(int argc, char **argv)
   return p;
 }
 
-class HeatEquationPaperSolver {
+class LUFactorization {
 public:
-    HeatEquationPaperSolver(struct Params params, int n = 16, float dt = 0.01, float a = 1.0, float t_final = 4.0, int num_bits = 8)
-        : params(params), n(n), dt(dt), a(a), t_final(t_final), num_bits(num_bits)
-    {
-        N = n * n;
-        h = 6.0 / (n - 1);
-        n_steps = static_cast<int>(round(t_final / dt));
-
-        // Grid points
-        x.resize(n);
-        y.resize(n);
-        for (int i = 0; i < n; i++) {
-            x[i] = -3.0 + i * h;
-            y[i] = -3.0 + i * h;
-        }
-
-        // Build Laplacian
-        buildLaplacian();
-
-        // Build R
-        int d = -4;
-        R = A - d * MatrixXf::Identity(N, N);
-        R = R / fabs(d);
-
-        // Initial condition (Gaussian)
-        start_u = VectorXf(N);
-        for (int i = 0; i < n; i++) {
-            for (int j = 0; j < n; j++) {
-                float X = x[j];
-                float Y = y[i];
-                start_u(i * n + j) = exp(-2.0 * (X * X + Y * Y));
-            }
-        }
-
-        matR.resize(N * N);
-        vecU.resize(N);
-    }
-
-    void solveHardware(const vector<float>& target_times) {
-        cout << "Solving Heat Equation using optical format on hardware..." << endl;
-
-        hardware_solutions.clear();
-        hardware_actual_times.clear();
-
-        u=start_u;
-        u_new = VectorXf(N);
-
-        if(initializeHardware()!=PHOTONICS_OK) return;
-
-        quantize_matrix(-1.0, 1.0);
-        status = photonicsCopyHostToDevice((void *)matR.data(), matAObject);
-        if (status != PHOTONICS_OK)
-        {
-          std::cout << "Function: " << __func__ << "Abort: photonicsCopyHostToDevice failed between matAObject and matA" << std::endl;
+    LUFactorization(struct Params params)
+        : params(params)
+    {   
+        if(initializeHardware()!=PHOTONICS_OK) {
+          std::cout << "❌ Function: " << __func__ << "Abort: intializeHardware() failed" << std::endl;
           return;
         }
 
-        for (int k = 1; k <= n_steps; k++) {
-            
-            calPhotonics(k);
-            if (status != PHOTONICS_OK) return;
+        std::cout << "Matrix size: " << N << " x " << N << "\n";
 
-            auto start = std::chrono::high_resolution_clock::now();
+        A.resize(N, N);
+        std::srand(static_cast<unsigned>(std::time(nullptr)));
 
-            float t = k * dt;
+        for (int i = 0; i < N; ++i)
+            for (int j = 0; j < N; ++j)
+                A(i, j) = static_cast<float>(std::rand() % 10 + 1); // values 1–10
 
-            // Update equation
-            u = (dt * a / (h * h)) * u_new
-                           + ((dt * a / (h * h)) * d + 1.0) * u
-                           + qFunc(t) * dt;
+        // Optionally make diagonally dominant for stability:
+        for (int i = 0; i < N; ++i)
+            A(i, i) += static_cast<float>(N * 5);
 
-            // Save solutions at requested times
-            for (size_t i = 0; i < target_times.size(); i++) {
-                if ((fabs(t - target_times[i]) < (dt / 2.0)) && (hardware_solutions.size() < i + 1)) {
-                    MatrixXf sol(n, n);
-                    for (int row = 0; row < n; row++)
-                        for (int col = 0; col < n; col++)
-                            sol(row, col) = u(row * n + col);
-
-                    hardware_solutions.push_back(sol);
-                    hardware_actual_times.push_back(t);
-                    cout << "Saved solution at t = " << t << endl;
-                }
-            }
-            auto end = std::chrono::high_resolution_clock::now();
-            hostElapsedTime += (end - start);
+        std::cout << "\nGenerated matrix A (first 5×5 block):\n";
+        for (int i = 0; i < std::min<int>(N, 5); ++i) {
+            for (int j = 0; j < std::min<int>(N, 5); ++j)
+                std::cout << A(i, j) << "\t";
+            if (N > 5) std::cout << "...";
+            std::cout << "\n";
         }
+
+        tileCols = numHCores * numElementsPerVector;
+        tileRows = numVCores * numVectorsPerCore;
+
+        matR.resize(tileSize);
+        out.resize(numHCores * tileRows);
+        vecU.resize(tileCols);
+
+        // -------------------------------
+        // Enumerate available platforms
+        // -------------------------------
+        std::vector<platform> platforms = get_platforms();
+        std::cout << "Found " << platforms.size() << " OpenCL platform(s):\n";
+        for (auto &p : platforms)
+            std::cout << "  Platform: " << p.info() << std::endl;
+
+        // -------------------------------
+        // Pick first GPU device
+        // -------------------------------
+        std::vector<device> devices = platforms[0].devices(CL_DEVICE_TYPE_GPU);
+        if (devices.empty()) {
+            std::cerr << "No GPU devices found.\n";
+            return;
+        }
+        std::cout << "Using device: " << devices[0].name() << "\n";
+
+        setup_context(0, devices[0]);
+        context &ctx = current_context();
+
+        // Optional: safer kernel flags for NVIDIA OpenCL
+        ctx.build_options("-cl-std=CL1.2 -cl-fast-relaxed-math");
+    }
+
+    ~LUFactorization(){
         photonicsFreeSrcVec(vecUObject);
         photonicsFreeDestVec(outObject);
         photonicsFreeMat(matAObject);
     }
 
-    void solveSoftware(const vector<float>& target_times) {
-        cout << "Solving Heat Equation using optical format on software..." << endl;
+    void solvePhotonics() {
+        cout << "\nLU Factorization with Photonics+GPU..." << endl;
 
-        software_solutions.clear();
-        software_actual_times.clear();
+        A_pho.resize(N, N);
+        viennacl::copy(A, A_pho);
+        Akk_tile.resize(tileCols, tileCols);
+        tempT.resize(tileCols, tileCols);
 
-        u=start_u;
+        // -------------------------------
+        // LU factorization on GPU + Photonics
+        // -------------------------------
+        auto start = std::chrono::high_resolution_clock::now();
 
-        for (int k = 1; k <= n_steps; k++) {
-            float t = k * dt;
+        // ---- Blocked LU: for k = 0.. in steps of tileCols ----
+        for (int k = 0; k < N; k += tileCols)
+        {
 
-            // Update equation
-            VectorXf u_new = (dt * a / (h * h)) * R * u
-                           + ((dt * a / (h * h)) * d + 1.0) * u
-                           + qFunc(t) * dt;
-            u = u_new;
+            // Ranges for the panel (Akk), the row (Ak*), and the column (A*k)
+            viennacl::range rK(k, k + tileCols);
+            viennacl::range cK(k, k + tileCols);
 
-            // Save solutions at requested times
-            for (size_t i = 0; i < target_times.size(); i++) {
-                if ((fabs(t - target_times[i]) < (dt / 2.0)) && (software_solutions.size() < i + 1)) {
-                    MatrixXf sol(n, n);
-                    for (int row = 0; row < n; row++)
-                        for (int col = 0; col < n; col++)
-                            sol(row, col) = u(row * n + col);
+            // --- 1) Panel LU on diagonal tile: Akk = Lkk * Ukk ---
+            // We factor a temporary Akk_tile (b×b) on device, then write back.
+            viennacl::matrix_range<viennacl::matrix<float>> Akk_view(A_pho, rK, cK);
 
-                    software_solutions.push_back(sol);
-                    software_actual_times.push_back(t);
-                    cout << "Saved solution at t = " << t << endl;
+            Akk_tile = Akk_view;                        // copy tile view -> dense tile
+            viennacl::linalg::lu_factorize(Akk_tile);   // LU on the tile (GPU)
+            Akk_view = Akk_tile;                        // write back LU factors into A
+
+            // --- 2) Update U blocks to the right: U_kj = L_kk^{-1} A_kj  (left lower solve) ---
+            for (int j = k + tileCols; j < N; j += tileCols)
+            {
+                viennacl::range cJ(j, j + tileCols);
+                viennacl::matrix_range<viennacl::matrix<float>> Akj(A_pho, rK, cJ);
+
+                // Solve L_kk * X = A_kj  (L is unit-lower from LU; use unit_lower_tag)
+                viennacl::linalg::inplace_solve(Akk_tile, Akj, viennacl::linalg::unit_lower_tag());
+                // After this: A_kj holds U_kj
+            }
+
+            // --- 3) Update L blocks below: L_ik = A_ik * U_kk^{-1} (right upper solve)
+            // Implement right-side solve via transpose trick:
+            //   X * U = B  <=>  U^T * X^T = B^T  (left lower solve on transposed system).
+            for (int i = k + tileCols; i < N; i += tileCols)
+            {
+                viennacl::range rI(i, i + tileCols);
+                viennacl::matrix_range<viennacl::matrix<float>> Aik(A_pho, rI, cK);
+
+                // tempT := A_ik^T  (size bk x bi)
+                tempT = trans(Aik);
+
+                // Solve (U_kk^T) * tempT = A_ik^T.
+                // U_kk is upper => U_kk^T is lower (non-unit).
+                viennacl::linalg::inplace_solve(trans(Akk_tile), tempT, viennacl::linalg::lower_tag());
+
+                // Write back: A_ik := (tempT)^T  (now holds L_ik)
+                Aik = trans(tempT);
+            }
+
+            // --- 4) Schur update on trailing tiles: A_ij -= L_ik * U_kj  ---
+            for (int i = k + tileCols; i < N; i += tileCols)
+            {
+                viennacl::range rI(i, i + tileCols);
+                viennacl::matrix_range<viennacl::matrix<float>> Aik(A_pho, rI, cK);  // L_ik
+
+                for (int j = k + tileCols; j < N; j += tileCols)
+                {
+                    viennacl::range cJ(j, j + tileCols);
+                    viennacl::matrix_range<viennacl::matrix<float>> Akj(A_pho, rK, cJ);  // U_kj
+                    viennacl::matrix_range<viennacl::matrix<float>> Aij(A_pho, rI, cJ);  // update
+
+                    // A_ij -= A_ik * A_kj
+                    Aij = Aij - viennacl::linalg::prod(Aik, Akj);
                 }
             }
         }
+
+        hostElapsedTimeGpu = (std::chrono::high_resolution_clock::now() - start);
+        std::cout << "LU factorization completed in " << hostElapsedTimeGpu.count() << " ms on the GPU + Photonics\n";
+
+        // -------------------------------
+        // Copy GPU → CPU and print
+        // -------------------------------
+        A_pho_res.resize(N, N);
+        viennacl::copy(A_pho, A_pho_res);
+
+        std::cout << "\nLU-factored matrix (first 5×5 block):\n";
+        for (int i = 0; i < std::min<int>(N, 5); ++i) {
+            for (int j = 0; j < std::min<int>(N, 5); ++j)
+                std::cout << A_pho_res(i, j) << "\t";
+            if (N > 5) std::cout << "...";
+            std::cout << "\n";
+        }
+
+        //quantize_matrix(-1.0, 1.0);
+        // status = photonicsCopyHostToDevice((void *)matR.data(), matAObject);
+        // if (status != PHOTONICS_OK)
+        // {
+        //   std::cout << "❌ Function: " << __func__ << "Abort: photonicsCopyHostToDevice failed between matAObject and matA" << std::endl;
+        //   return;
+        // }
+
+
     }
 
-    void printHardwareSolutions() const {
-        cout << "\nPrinting Hardware Solutions...\n" << endl;
-        for (size_t k = 0; k < hardware_solutions.size(); k++) {
-            cout << "\nSolution at t = " << hardware_actual_times[k] << ":\n";
-            cout << hardware_solutions[k] << endl;
+    void solveGPU() {
+        cout << "\nLU Factorizing with GPU..." << endl;
+
+        A_gpu.resize(N, N);
+        viennacl::copy(A, A_gpu);
+
+        // -------------------------------
+        // LU factorization on GPU
+        // -------------------------------
+        auto start = std::chrono::high_resolution_clock::now();
+
+        viennacl::linalg::lu_factorize(A_gpu);
+
+        gpuElapsedTime = (std::chrono::high_resolution_clock::now() - start);
+        std::cout << "LU factorization completed in " << gpuElapsedTime.count() << " ms on the GPU\n";
+
+        // -------------------------------
+        // Copy GPU → CPU and print
+        // -------------------------------
+        A_gpu_res.resize(N, N);
+        viennacl::copy(A_gpu, A_gpu_res);
+
+        std::cout << "\nLU-factored matrix (first 5×5 block):\n";
+        for (int i = 0; i < std::min<int>(N, 5); ++i) {
+            for (int j = 0; j < std::min<int>(N, 5); ++j)
+                std::cout << A_gpu_res(i, j) << "\t";
+            if (N > 5) std::cout << "...";
+            std::cout << "\n";
         }
     }
 
-    void printSoftwareSolutions() const {
-        cout << "\nPrinting Software Solutions...\n" << endl;
-        for (size_t k = 0; k < software_solutions.size(); k++) {
-            cout << "\nSolution at t = " << software_actual_times[k] << ":\n";
-            cout << software_solutions[k] << endl;
-        }
+    const matrix<float>& getPhotonicsSolution() const { return A_pho_res; }
+
+    const matrix<float>& getCPUSolutions() const { return A_cpu_res; }
+
+    const matrix<float>& getGPUSolutions() const { return A_gpu_res; }
+
+    void printGpuPhotonicsBreakdown() { 
+        #if USE_GPU_SOLVER
+            cout << "\nPrinting GPU+Photonics Breakdown..." << endl;
+            printGpuHostElapsedTime();
+            printGpuQuantElapsedTime();
+            printGpuSyncElapsedTime();
+            printGpuTransferElapsedTime();
+        #endif
     }
 
-    const vector<MatrixXf>& getHardwareSolutions() const { return hardware_solutions; }
-    const vector<float>& getHardwareActualTimes() const { return hardware_actual_times; }
-
-    const vector<MatrixXf>& getSoftwareSolutions() const { return software_solutions; }
-    const vector<float>& getSoftwareActualTimes() const { return software_actual_times; }
-
-    void printHostElapsedTime() { 
-      cout << "Host elapsed time: " << std::fixed << std::setprecision(3) << hostElapsedTime.count() << " ms." << endl;
+    void printGPUElapsedTime() { 
+        #if USE_GPU_SOLVER
+            cout << "GPU elapsed time: " << std::fixed << std::setprecision(3) << gpuElapsedTime.count() << " ms." << endl;
+        #endif
     }
 
-    void compareSolutions(){
-        cout << "\nComparing Hardware and Software Solutions...\n";
+    void compareWithPhotonics(){
+        cout << "\nComparing Photonics and Software Solutions...\n";
 
-        if (hardware_solutions.size() != software_solutions.size()) {
-            cerr << "Warning: Mismatch in number of saved solutions! "
-                << "Hardware = " << hardware_solutions.size()
-                << ", Software = " << software_solutions.size() << endl;
+        if (A_gpu_res.size1() != A_pho_res.size1() || A_gpu_res.size2() != A_pho_res.size2()) {
+            std::cerr << "❌ Error: Matrix size mismatch: A_gpu_res(" << A_gpu_res.size1() << "x" << A_gpu_res.size2()
+                      << ") vs A_pho_res(" << A_pho_res.size1() << "x" << A_pho_res.size2() << ")\n";
             return;
         }
 
-        for (size_t k = 0; k < hardware_solutions.size(); k++) {
-            const MatrixXf& H = hardware_solutions[k];
-            const MatrixXf& S = software_solutions[k];
+        float max_abs_error = 0.0f;
+        float total_abs_error = 0.0f;
+        float normA = 0.0f;
+        float norm_diff = 0.0f;
+        int count_mismatch = 0;
 
-            if (H.rows() != S.rows() || H.cols() != S.cols()) {
-                cerr << "Dimension mismatch at solution " << k << endl;
-                continue;
+        for (std::size_t i = 0; i < A_gpu_res.size1(); ++i) {
+            for (std::size_t j = 0; j < A_gpu_res.size2(); ++j) {
+                float diff = std::fabs(A_gpu_res(i, j) - A_pho_res(i, j));
+                max_abs_error = std::max(max_abs_error, diff);
+                total_abs_error += diff;
+                normA += A_gpu_res(i, j) * A_gpu_res(i, j);
+                norm_diff += diff * diff;
+
+                if (diff > tolerance) {
+                    ++count_mismatch;
+                    if (count_mismatch <= 5) { // only show first few mismatches
+                        std::cout << "  Mismatch at (" << i << "," << j << "): "
+                                  << "A_gpu_res=" << A_gpu_res(i, j) << ", A_pho_res=" << A_pho_res(i, j)
+                                  << ", diff=" << diff << "\n";
+                    }
+                }
             }
-
-            // Compute difference
-            MatrixXf diff = H - S;
-
-            double l2_error = diff.norm();        // L2 norm of difference
-            double l2_ref   = S.norm();           // L2 norm of reference
-            double rel_error = (l2_ref > 1e-12) ? (l2_error / l2_ref) : l2_error;
-
-            double max_abs_error = diff.cwiseAbs().maxCoeff();
-
-            cout << "t = " << software_actual_times[k]
-                << " | L2 Error = " << l2_error
-                << " | Relative Error = " << rel_error
-                << " | Max Abs Error = " << max_abs_error
-                << endl;
         }
+
+        float mean_abs_error = total_abs_error / (A_gpu_res.size1() * A_gpu_res.size2());
+        float relative_error = std::sqrt(norm_diff) / (std::sqrt(normA) + std::numeric_limits<float>::epsilon());
+
+        std::cout << "\n=== Matrix Comparison Report ===\n";
+        std::cout << "Max Absolute Error     : " << max_abs_error << "\n";
+        std::cout << "Mean Absolute Error    : " << mean_abs_error << "\n";
+        std::cout << "Relative Frobenius Err : " << relative_error << "\n";
+        std::cout << "Values above tolerance : " << count_mismatch << "\n";
+        std::cout << "================================\n";
         return;
     }
 
 private:
     struct Params params;
-    int n;          // grid size in one dimension
     int N;          // total number of grid points
-    float dt;      // time step
-    float a;       // diffusivity
-    float t_final; // final time
-    int n_steps;    // number of steps
-    float h;       // grid spacing
-    int d = -4;     // diagonal value
+    int tileSize;
+    int tileCols;
+    int tileRows;
+    const float tolerance = 1e-5f;
     int num_bits = 8;
-    int q_levels = (1 << num_bits) - 1;
+    float q_levels = (1 << num_bits) - 1;
+    int numVCores, numHCores, numVectorsPerCore, numElementsPerVector;
+    size_t bytes_R, bytes_u, bytes_u_q, bytes_out, bytes_out_q;
 
-    vector<float> x, y;
-    MatrixXf A, R;
-    VectorXf u, u_new, start_u;
-    vector<MatrixXf> hardware_solutions, software_solutions;
-    vector<float> hardware_actual_times, software_actual_times;
-    std::chrono::duration<float, std::milli> hostElapsedTime = std::chrono::duration<float, std::milli>::zero();
+    matrix<float> A, A_cpu, A_gpu_res, A_pho_res, A_cpu_res;
+    matrix<uint8_t> A_pho_q;
+    viennacl::matrix<float> A_gpu, A_pho;
+    viennacl::matrix<float> Akk_tile, tempT;
+
+    std::chrono::duration<float, std::milli> hostElapsedTimeGpu = std::chrono::duration<float, std::milli>::zero();
+    std::chrono::duration<float, std::milli> quantElapsedTimeGpu = std::chrono::duration<float, std::milli>::zero();
+    std::chrono::duration<float, std::milli> syncElapsedTimeGpu = std::chrono::duration<float, std::milli>::zero();
+    std::chrono::duration<float, std::milli> gpuElapsedTime = std::chrono::duration<float, std::milli>::zero();
+    std::chrono::duration<float, std::milli> transferElapsedTimeGpu = std::chrono::duration<float, std::milli>::zero();
 
     PhotonicsObjId matAObject;
     PhotonicsObjId outObject;
     PhotonicsObjId vecUObject;
+    PhotonicsDeviceProperties deviceParams;
+
+    #if USE_GPU_SOLVER
+        float *d_R, *d_u, *d_one, *d_u_temp, *d_out;
+        uint8_t *d_q, *d_out_q;
+        cublasHandle_t handle;
+        cudaStream_t stream; 
+        NppStreamContext nppCtx;
+    #endif
 
     PhotonicsStatus status = PHOTONICS_OK;
-    std::vector<uint8_t> vecU;
-    std::vector<uint8_t> matR;
-
-    void buildLaplacian() {
-        A = MatrixXf::Zero(N, N);
-        for (int i = 0; i < n; i++) {
-            for (int j = 0; j < n; j++) {
-                int idx = i * n + j;
-                A(idx, idx) = -4;
-                if (j < n - 1) A(idx, idx + 1) = 1;   // right
-                if (j > 0)     A(idx, idx - 1) = 1;   // left
-                if (i > 0)     A(idx, idx - n) = 1;   // top
-                if (i < n - 1) A(idx, idx + n) = 1;   // bottom
-            }
-        }
-    }
-
-    VectorXf qFunc(float t) {
-        VectorXf q = VectorXf::Ones(N);
-        return 0.1 * sin(2.0 * M_PI * t) * q;
-    }
+    vector<uint8_t> vecU;
+    vector<uint8_t> out;
+    vector<uint8_t> matR;
 
     PhotonicsStatus initializeHardware(){
       if (!initPhotonicsAccel(params.dramConfigFile))
         return PHOTONICS_ERROR;
 
-      matAObject = photonicsAllocMat(N*N, PHOTONICS_FP32);
+      if (!getHardwareSpecs(&deviceParams)){
+        return PHOTONICS_ERROR;
+      }
+
+      numVCores = deviceParams.numRanks;
+      numHCores = deviceParams.numBankPerRank;
+      numVectorsPerCore = deviceParams.numSubarrayPerBank;
+      numElementsPerVector = deviceParams.numColPerSubarray / 32;
+
+      N = deviceParams.matrixSize;
+
+      tileSize = numVCores * numHCores * numElementsPerVector * numVectorsPerCore;
+
+      matAObject = photonicsAllocMat(tileSize, PHOTONICS_FP32);
       if (matAObject == -1)
       {
-        std::cout << "Function: " << __func__ << "Abort: photonicsAlloc failed for matrix A" << std::endl;
+        std::cout << "❌ Function: " << __func__ << "Abort: photonicsAlloc failed for matrix A" << std::endl;
         return PHOTONICS_ERROR;
       }
       
       outObject = photonicsAllocAssociatedDestVec(matAObject, PHOTONICS_FP32);
       if (outObject == -1)
       {
-        std::cout << "Function: " << __func__ << "Abort: photonicsAllocAssociated failed for vector U = " << outObject << std::endl;
+        std::cout << "❌ Function: " << __func__ << "Abort: photonicsAllocAssociated failed for vector U = " << outObject << std::endl;
         return PHOTONICS_ERROR;
       }
       
       vecUObject = photonicsAllocAssociatedSrcVec(matAObject, PHOTONICS_FP32);
       if (vecUObject == -1)
       {
-        std::cout << "Function: " << __func__ << "Abort: photonicsAllocAssociated failed for vector U = " << vecUObject << std::endl;
+        std::cout << "❌ Function: " << __func__ << "Abort: photonicsAllocAssociated failed for vector U = " << vecUObject << std::endl;
         return PHOTONICS_ERROR;
       }
 
@@ -344,59 +454,152 @@ private:
 
     }
 
-    void calPhotonics(int i){
+    // void calPhotonics(int i){
 
-      quantize_vector(-1.0, 1.0);
-      status = photonicsCopyHostToDevice((void *)vecU.data(), vecUObject);
-      if (status != PHOTONICS_OK)
-      {
-        std::cout << "Function: " << __func__ << "Abort: photonicsCopyHostToDevice failed between vecUObject and vecU at i=" << i << std::endl;
-        return;
-      }
+    //   quantize_vector(-1.0, 1.0);
+    //   status = photonicsCopyHostToDevice((void *)vecU.data(), vecUObject);
+    //   if (status != PHOTONICS_OK)
+    //   {
+    //     std::cout << "❌ Function: " << __func__ << "Abort: photonicsCopyHostToDevice failed between vecUObject and vecU at i=" << i << std::endl;
+    //     return;
+    //   }
 
-      status = photonicsIter(matAObject, vecUObject, outObject, 1);
-      if (status != PHOTONICS_OK)
-      {
-        std::cout << "Function: " << __func__ << "Abort: photonicsIter Failed at i=" << i << std::endl;
-        return;
-      }
+    //   status = photonicsMvm(matAObject, vecUObject, outObject);
+    //   if (status != PHOTONICS_OK)
+    //   {
+    //     std::cout << "❌ Function: " << __func__ << "Abort: photonicsMvm Failed at i=" << i << std::endl;
+    //     return;
+    //   }
 
-      status = photonicsCopyDeviceToHost(vecUObject, vecU.data());
-      if (status != PHOTONICS_OK)
-      {
-        std::cout << "Function: " << __func__ << "Abort: photonicsCopyDeviceToHost failed between vecUObject and vecU at i=" << i << std::endl;
-        return;
-      }
-      dequantize_vector(-1.0, 1.0);
-      return;
+    //   status = photonicsCopyDeviceToHost(outObject, out.data());
+    //   if (status != PHOTONICS_OK)
+    //   {
+    //     std::cout << "❌ Function: " << __func__ << "Abort: photonicsCopyDeviceToHost failed between outObject and out at i=" << i << std::endl;
+    //     return;
+    //   }
+    //   dequantize_vector(-1.0, 1.0);
+    //   return;
+    // }
+
+    // // Vector quantization
+    // void quantize_matrix(float min_val, float max_val) {
+    //     const float scale = q_levels / (max_val - min_val);
+    //     q_mat = (((R.array() - min_val) * scale) + 0.5f)
+    //                 .cwiseMin(static_cast<float>(q_levels))
+    //                 .cwiseMax(0.0f)
+    //                 .cast<uint8_t>();
+    //     for (int i = 0; i < N; i++) {
+    //       for (int j = 0; j < N; j++) {
+    //         matR[i * N + j] = q_mat(i,j);
+    //       }
+    //     }
+    // }
+
+    // void quantize_vector(float min_val, float max_val) {
+
+    //     auto start2 = std::chrono::high_resolution_clock::now();
+    //     const float scale = q_levels / (max_val - min_val);
+    //     q_vec = (((u.array() - min_val) * scale) + 0.5f)
+    //                 .cwiseMin(static_cast<float>(q_levels))
+    //                 .cwiseMax(0.0f)
+    //                 .cast<uint8_t>();
+    //     quantElapsedTimeCpu += (std::chrono::high_resolution_clock::now() - start2);
+
+    //     #if USE_GPU_SOLVER
+    //         start2 = std::chrono::high_resolution_clock::now();
+    //         Npp32f scale2 = q_levels / (max_val - min_val);
+    //         Npp32f minVal = min_val;
+    //         nppsSubC_32f_I(minVal, d_u, N);
+    //         nppsMulC_32f_I(scale2, d_u, N);
+    //         nppsConvert_32f8u_Sfs(d_u, d_q, N, NPP_RND_NEAR, 0);
+    //         quantElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
+            
+    //         start2 = std::chrono::high_resolution_clock::now();
+    //         cudaMemcpy(q_vec_gpu.data(), d_q, bytes_u_q, cudaMemcpyDeviceToHost);
+    //         transferElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
+    //     #endif
+
+    //     std::memcpy(vecU.data(), q_vec.data(), bytes_u_q);
+    // }
+
+    // void dequantize_vector(float min_val, float max_val) {
+    //     // Map raw 'out' data (uint8_t) into Eigen array of shape [N x numHCores]
+    //     Map<const Array<uint8_t, Dynamic, Dynamic, RowMajor>>
+    //         out_mat_temp(out.data(), N, numHCores);
+    //     for (int i = 0; i < numHCores; i++) {
+    //         out_mat_col[i] = out_mat_temp.col(i).cast<int>().matrix();
+    //     }
+
+    //     auto start2 = std::chrono::high_resolution_clock::now();
+    //     for (int i = 1; i < numHCores; i++) {
+    //         out_mat_col[0] = out_mat_col[0] + out_mat_col[i];
+    //     }
+    //     syncElapsedTimeCpu += (std::chrono::high_resolution_clock::now() - start2);
+
+    //     start2 = std::chrono::high_resolution_clock::now();
+    //     const float scale = (max_val - min_val) / q_levels;
+    //     u_temp = (out_mat_col[0].array().cast<float>() * scale) + min_val;
+    //     quantElapsedTimeCpu += (std::chrono::high_resolution_clock::now() - start2);
+
+    //     #if USE_GPU_SOLVER
+    //         // ----------------------
+    //         // GPU version (Thrust)
+    //         // ----------------------
+    //         start2 = std::chrono::high_resolution_clock::now();
+    //         cudaMemcpy(d_out_q, out.data(), bytes_out, cudaMemcpyHostToDevice);
+    //         transferElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
+
+    //         int total = N * numHCores;
+    //         start2 = std::chrono::high_resolution_clock::now();
+    //         nppsConvert_8u32f(d_out_q, d_out, total);
+    //         quantElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
+            
+    //         start2 = std::chrono::high_resolution_clock::now();
+    //         alpha_fused = alpha * scale;
+    //         cublasSgemv(handle, CUBLAS_OP_T,
+    //                     N, numHCores,
+    //                     &alpha_fused,
+    //                     d_out, N,
+    //                     d_one, 1,
+    //                     &beta,
+    //                     d_u, 1);
+    //         offset = alpha * min_val + gamma;
+    //         cublasSaxpy(handle, N, &offset, d_one, 1, d_u, 1);
+    //         hostElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
+    //     #endif
+    // }
+
+    // void init_gpu_handles(cudaStream_t stream) {
+    //     cublasSetStream(handle, stream);
+
+    //     // Fill NPP stream context (minimal set)
+    //     memset(&nppCtx, 0, sizeof(nppCtx));
+    //     nppCtx.hStream = stream;
+    //     cudaDeviceProp prop{};
+    //     int dev=0; cudaGetDevice(&dev); cudaGetDeviceProperties(&prop, dev);
+    //     nppCtx.nCudaDeviceId                 = dev;
+    //     nppCtx.nMultiProcessorCount          = prop.multiProcessorCount;
+    //     nppCtx.nMaxThreadsPerMultiProcessor  = prop.maxThreadsPerMultiProcessor;
+    //     nppCtx.nMaxThreadsPerBlock           = prop.maxThreadsPerBlock;
+    //     nppCtx.nSharedMemPerBlock            = prop.sharedMemPerBlock;
+    //     nppCtx.nCudaDevAttrComputeCapabilityMajor = prop.major;
+    //     nppCtx.nCudaDevAttrComputeCapabilityMinor = prop.minor;
+    // }
+
+    void printGpuHostElapsedTime() { 
+      cout << "Host elapsed time: " << std::fixed << std::setprecision(3) << hostElapsedTimeGpu.count() << " ms." << endl;
     }
 
-    // Vector quantization
-    void quantize_matrix(float min_val, float max_val) {
-        float scale = (max_val - min_val) / q_levels;
-        for (int i = 0; i < N; i++) {
-          for (int j = 0; j < N; j++) {
-            int q = std::round((R(i,j) - min_val) / scale);
-            q = std::max(0, std::min(q, q_levels));
-            matR[i * N + j] = static_cast<uint8_t>(q);
-          }
-        }
+    void printGpuQuantElapsedTime() { 
+      cout << "Quantization elapsed time: " << std::fixed << std::setprecision(3) << quantElapsedTimeGpu.count() << " ms." << endl;
     }
 
-    void quantize_vector(float min_val, float max_val) {
-        float scale = (max_val - min_val) / q_levels;
-        for (int i = 0; i < N; i++) {
-            int q = std::round((u(i) - min_val) / scale);
-            q = std::max(0, std::min(q, q_levels));
-            vecU[i] = static_cast<uint8_t>(q);
-        }
+    void printGpuSyncElapsedTime() { 
+      cout << "Photonics Core Synchronization elapsed time: " << std::fixed << std::setprecision(3) << syncElapsedTimeGpu.count() << " ms." << endl;
     }
 
-    void dequantize_vector(float min_val, float max_val) {
-        float scale = (max_val - min_val) / q_levels;
-        for (int i = 0; i < N; i++) {
-            u_new(i) = vecU[i] * scale + min_val;
-        }
+    void printGpuTransferElapsedTime() { 
+      cout << "GPU transfer elapsed time: " << std::fixed << std::setprecision(3) << transferElapsedTimeGpu.count() << " ms." << endl;
     }
 };
 
@@ -406,20 +609,17 @@ int main(int argc, char *argv[])
 
   params.dramConfigFile = (char *) "./configs/photonics/lud.cfg";
 
-  HeatEquationPaperSolver solver(params, 16, 0.01, 1.0, 4.0, 8);
+  LUFactorization solver(params);
+  
+  solver.solveGPU();
+  solver.solvePhotonics();
 
-  vector<float> target_times = {0.25, 1.25, 3.75};
+  solver.compareWithPhotonics();
 
-  solver.solveHardware(target_times);
-  //solver.printHardwareSolutions();
+  // photonicsShowStats();
+  solver.printGPUElapsedTime();
 
-  solver.solveSoftware(target_times);
-  //solver.printSoftwareSolutions();
-
-  solver.compareSolutions();
-
-  photonicsShowStats();
-  solver.printHostElapsedTime();
+  solver.printGpuPhotonicsBreakdown();
 
   return 0;
 }
