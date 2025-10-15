@@ -178,8 +178,10 @@ public:
         A_pho.resize(N, N);
         A_pho_res.resize(N, N);
         A_pho_q.resize(N, N);
-        A_pho_q_i.resize(N, N);
-        A_pho_temp_i.resize(N, N);
+        A_pho_temp_cpu.resize(N, N);
+        A_pho_temp_gpu.resize(N, N);
+        A_pho_ones.resize(N, N);
+        A_pho_ones = viennacl::scalar_matrix<float>(N, N, 1.0f);
         // cublasCreate(&handle);
         // cudaStreamCreate(&stream);
         // init_gpu_handles(stream);
@@ -187,8 +189,9 @@ public:
         // -------------------------------
         // LU factorization on GPU + Photonics
         // -------------------------------
-        quantize_matrix(minVal, maxVal);
         auto start = std::chrono::high_resolution_clock::now();
+        viennacl::copy(A, A_pho);
+        transferElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start);
         project(A_pho_res, range(0, tileCols), range(0, N)) = project(A, range(0, tileCols), range(0, N));
         project(A_pho_res, range(tileCols, N), range(0, tileCols)) = project(A, range(tileCols, N), range(0, tileCols));
 
@@ -198,23 +201,7 @@ public:
             start = std::chrono::high_resolution_clock::now();
             viennacl::range rK(k, k + tileCols);
             viennacl::range cK(k, k + tileCols);
-            hostElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start);
 
-            viennacl::range u_range(k, N);
-            viennacl::matrix_range<viennacl::matrix<float>> AU_view(A_pho, rK, u_range);
-            matrix<float> AU_block(tileCols, N - k);
-            AU_block = project(A_pho_res, range(k, k+tileCols), range(k, N));
-            viennacl::range l_range(k + tileCols, N);
-            viennacl::matrix_range<viennacl::matrix<float>> AL_view(A_pho, l_range, cK);
-            matrix<float> AL_block(tileCols, N - k);
-            AL_block = project(A_pho_res, range(k+tileCols, N), range(k, k+tileCols));
-            
-            start = std::chrono::high_resolution_clock::now();
-            viennacl::copy(AU_block, AU_view);
-            viennacl::copy(AL_block, AL_view);
-            transferElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start);
-
-            start = std::chrono::high_resolution_clock::now();
             // Ranges for the panel (Akk), the row (Ak*), and the column (A*k)
 
             // --- 1) Panel LU on diagonal tile: Akk = Lkk * Ukk ---
@@ -256,31 +243,20 @@ public:
             }
             hostElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start);
 
-            start = std::chrono::high_resolution_clock::now();
-            viennacl::copy(AU_view, AU_block);
-            transferElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start);
-            project(A_pho_res, range(k, k+tileCols), range(k, N)) = AU_block;
-
             if(k >= N-tileCols) break;
-
-            start = std::chrono::high_resolution_clock::now();
-            viennacl::copy(AL_view, AL_block);
-            transferElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start);
-            project(A_pho_res, range(k+tileCols, N), range(k, k+tileCols)) = AL_block;
 
             quantize_portion(k, minVal, maxVal);
 
             calPhotonics(k);
 
-            start = std::chrono::high_resolution_clock::now();
-            A_pho_q_i.block(k+tileCols, k+tileCols, N-k-tileCols, N-k-tileCols) = A_pho_q_i.block(k+tileCols, k+tileCols, N-k-tileCols, N-k-tileCols) - A_pho_temp_i.block(k+tileCols, k+tileCols, N-k-tileCols, N-k-tileCols);
-            hostElapsedTimeCpu += (std::chrono::high_resolution_clock::now() - start);
-            A_pho_q = A_pho_q_i.cast<uint8_t>();
-
-            dequantize_portion(k+tileCols, minVal, maxVal);
+            dequantize_result(k+tileCols, minVal, maxVal);
         }
 
         std::cout << "LU factorization completed in " << hostElapsedTimeGpu.count() << " ms on the GPU + Photonics\n";
+
+        start = std::chrono::high_resolution_clock::now();
+        viennacl::copy(A_pho, A_pho_res);
+        transferElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start);
 
         std::cout << "\nLU-factored matrix (first 5×5 block):\n";
         for (int i = 0; i < std::min<int>(N, 5); ++i) {
@@ -460,14 +436,15 @@ private:
     int numVCores, numHCores, numVectorsPerCore, numElementsPerVector;
     size_t bytes_R, bytes_u, bytes_u_q, bytes_out, bytes_out_q;
 
-    matrix<float> A, A_gpu_res, A_pho_res;
+    matrix<float> A, A_gpu_res, A_pho_res, A_pho_temp_cpu;
     //matrix<uint8_t> A_pho_q;
-    viennacl::matrix<float> A_gpu, A_pho;
+    viennacl::matrix<float> A_gpu, A_pho, A_pho_temp_gpu, A_pho_ones;
     viennacl::matrix<float> Akk_tile, tempT;
+    float alpha;
 
     //MatrixXf A_pho_temp;
     //VectorXf u, u_new, u_temp, start_u, q_one_vec, u_gpu, u_temp_gpu, q_one_ext;
-    ArrayXXi A_pho_q_i, A_pho_temp_i;
+    //ArrayXXi A_pho_q_i, A_pho_temp_i;
     Array<uint8_t, Dynamic, Dynamic> A_pho_q;
     //Array<uint8_t, Dynamic, 1> q_vec, q_vec_gpu;
 
@@ -583,57 +560,80 @@ private:
                   return;
               }
               for (int l = 0; l < tileRows; l++) {
-                  A_pho_temp_i(l+i, j) = static_cast<int>(out[l]);
+                  A_pho_q(l+i, j) = out[l];
               }
           }
       }
       return;
     }
 
-    void quantize_matrix(float min_val, float max_val) {
-        Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> 
-              A_map(A.data().begin(), A.size1(), A.size2());
-        auto start2 = std::chrono::high_resolution_clock::now();
-        const float scale = q_levels / (max_val - min_val);
-        A_pho_q.block(tileCols, tileCols, N-tileCols, N-tileCols) = 
-                (((A_map.block(tileCols, tileCols, N-tileCols, N-tileCols).array() - min_val) * scale) + 0.5f)
-                        .cwiseMin(static_cast<float>(q_levels))
-                        .cwiseMax(0.0f)
-                        .cast<uint8_t>();
-        quantElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
-        A_pho_q_i = A_pho_q.cast<int>();
-    }
-
     void quantize_portion(int k, float min_val, float max_val) {
-        Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> 
-              A_map(A_pho_res.data().begin(), A_pho_res.size1(), A_pho_res.size2());
+        viennacl::range c_range(k, k + tileCols);
+        viennacl::range u_range(k, N);
+        viennacl::matrix_range<viennacl::matrix<float>> AU_view(A_pho, c_range, u_range);
+        viennacl::matrix_range<viennacl::matrix<float>> AU_view_temp(A_pho_temp_gpu, c_range, u_range);
+        viennacl::matrix_range<viennacl::matrix<float>> AU_view_ones(A_pho_ones, c_range, u_range);
+        matrix<float> AU_block(tileCols, N - k);
+        viennacl::range l_range(k + tileCols, N);
+        viennacl::matrix_range<viennacl::matrix<float>> AL_view(A_pho, l_range, c_range);
+        viennacl::matrix_range<viennacl::matrix<float>> AL_view_temp(A_pho_temp_gpu, l_range, c_range);
+        viennacl::matrix_range<viennacl::matrix<float>> AL_view_ones(A_pho_ones, l_range, c_range);
+        matrix<float> AL_block(N - k - tileCols, tileCols);
+
         auto start2 = std::chrono::high_resolution_clock::now();
         const float scale = q_levels / (max_val - min_val);
+        alpha = min_val * scale - 0.5;
+        AU_view_temp = AU_view * scale - alpha * AU_view_ones;
+        AL_view_temp = AL_view * scale - alpha * AL_view_ones;
+        hostElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
+
+        start2 = std::chrono::high_resolution_clock::now();
+        viennacl::copy(AU_view_temp, AU_block);
+        viennacl::copy(AL_view_temp, AL_block);
+        transferElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
+        project(A_pho_temp_cpu, range(k, k+tileCols), range(k, N)) = AU_block;
+        project(A_pho_temp_cpu, range(k+tileCols, N), range(k, k+tileCols)) = AL_block;
+
+        Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> 
+              A_map(A_pho_temp_cpu.data().begin(), A_pho_temp_cpu.size1(), A_pho_temp_cpu.size2());
+        start2 = std::chrono::high_resolution_clock::now();
         A_pho_q.block(k, k+tileCols, tileCols, N-k-tileCols) = 
-                (((A_map.block(k, k+tileCols, tileCols, N-k-tileCols).array() - min_val) * scale) + 0.5f)
+                A_map.block(k, k+tileCols, tileCols, N-k-tileCols).array()
                         .cwiseMin(static_cast<float>(q_levels))
                         .cwiseMax(0.0f)
                         .cast<uint8_t>();
         A_pho_q.block(k+tileCols, k, N-k-tileCols, tileCols) = 
-                (((A_map.block(k+tileCols, k, N-k-tileCols, tileCols).array() - min_val) * scale) + 0.5f)
+                A_map.block(k+tileCols, k, N-k-tileCols, tileCols).array()
                         .cwiseMin(static_cast<float>(q_levels))
                         .cwiseMax(0.0f)
                         .cast<uint8_t>();
         quantElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
     }
 
-    void dequantize_portion(int k, float min_val, float max_val) {
+    void dequantize_result(int k, float min_val, float max_val) {
+
         Eigen::Map<Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>> 
-              A_map(A_pho_res.data().begin(), A_pho_res.size1(), A_pho_res.size2());
+              A_map(A_pho_temp_cpu.data().begin(), A_pho_temp_cpu.size1(), A_pho_temp_cpu.size2());
         auto start2 = std::chrono::high_resolution_clock::now();
         const float scale = (max_val - min_val) / q_levels;
-        A_map.block(k, k, tileCols, N-k).array() = 
-                (A_pho_q.block(k, k, tileCols, N-k).cast<float>() * scale) + min_val;
-        if (k < N-tileCols){
-            A_map.block(k+tileCols, k, N-k-tileCols, tileCols).array() = 
-                    (A_pho_q.block(k+tileCols, k, N-k-tileCols, tileCols).cast<float>() * scale) + min_val;
-        }
+        A_map.block(k, k, N-k, N-k).array() = 
+                (A_pho_q.block(k, k, N-k, N-k).cast<float>());
         quantElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
+        
+        viennacl::range AF_range(k, N);
+        viennacl::matrix_range<viennacl::matrix<float>> AF_view_temp(A_pho_temp_gpu, AF_range, AF_range);
+        viennacl::matrix_range<viennacl::matrix<float>> AF_view(A_pho, AF_range, AF_range);
+        viennacl::matrix_range<viennacl::matrix<float>> AF_view_ones(A_pho_ones, AF_range, AF_range);
+        matrix<float> AF_block(N - k, N - k);
+        AF_block = project(A_pho_temp_cpu, range(k, N), range(k, N));
+        
+        start2 = std::chrono::high_resolution_clock::now();
+        viennacl::copy(AF_block, AF_view_temp);
+        transferElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
+
+        start2 = std::chrono::high_resolution_clock::now();
+        AF_view -= (scale * AF_view_temp + min_val * AF_view_ones);
+        hostElapsedTimeGpu += (std::chrono::high_resolution_clock::now() - start2);
     }
 
     // void init_gpu_handles(cudaStream_t stream) {
